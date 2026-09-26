@@ -11,7 +11,8 @@
     "access": "public"
   },
   "bin": {
-    "hivemind": "bundle/cli.js"
+    "hivemind": "bundle/cli.js",
+    "prime-hivemind": "scripts/prime-hivemind.mjs"
   },
   "files": [
     "bundle",
@@ -37,6 +38,7 @@
     "dev": "tsc --watch",
     "shell": "tsx src/shell/deeplake-shell.ts",
     "cli": "tsx src/cli/index.ts",
+    "junie:hivemind": "node scripts/junie-hivemind.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "dup": "jscpd src",

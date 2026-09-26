@@ -104,7 +104,7 @@ const REGISTRY: Record<string, (env: NodeJS.ProcessEnv) => DocLlmSpec> = {
   }),
   cursor: (env) => ({
     label: "cursor",
-    bin: "cursor-agent",
+    bin: "agent",
     build: (b, p) =>
       buildTrailingPromptInvocation(b, [
         "--print",

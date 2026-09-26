@@ -109,7 +109,8 @@ export function forceSessionEndTrigger(opts: TriggerOptions): void {
         bundleDir: opts.bundleDir,
         agent: opts.agent,
         scopeConfig: loadScopeConfig(),
-        currentSessionId: opts.sessionId,
+        // SessionEnd means this transcript is complete and safe to mine.
+        currentSessionId: undefined,
         reason: "SessionEnd",
       });
     } catch (e: any) {

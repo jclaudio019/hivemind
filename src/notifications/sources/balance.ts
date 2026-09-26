@@ -21,6 +21,7 @@
 
 import type { Credentials } from "../../commands/auth-creds.js";
 import { log as _log } from "../../utils/debug.js";
+import { isLocalMode } from "../../storage/local-mode.js";
 
 const log = (msg: string) => _log("notifications-balance", msg);
 
@@ -41,6 +42,7 @@ export function parseBalanceHeader(headers: Headers | undefined): number | null 
 }
 
 export async function fetchBalanceCents(creds: Credentials | null): Promise<number | null> {
+  if (isLocalMode()) return null;
   if (!creds?.token) return null;
   const apiUrl = creds.apiUrl ?? DEFAULT_API_URL;
   const workspaceId = creds.workspaceId ?? "default";

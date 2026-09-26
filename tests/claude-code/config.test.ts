@@ -13,6 +13,7 @@ const existsSyncMock = vi.fn();
 const readFileSyncMock = vi.fn();
 const homedirMock = vi.fn();
 const userInfoMock = vi.fn();
+const mockCredentialsExists = () => existsSyncMock.mockImplementation((path: unknown) => String(path).endsWith("credentials.json"));
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -32,6 +33,7 @@ vi.mock("node:os", async () => {
 });
 
 const ENV_KEYS = [
+  "HIVEMIND_BACKEND",
   "HIVEMIND_TOKEN", "HIVEMIND_ORG_ID", "HIVEMIND_WORKSPACE_ID",
   "HIVEMIND_API_URL", "HIVEMIND_TABLE", "HIVEMIND_SESSIONS_TABLE",
   "HIVEMIND_SKILLS_TABLE", "HIVEMIND_RULES_TABLE",
@@ -59,6 +61,14 @@ afterEach(() => {
 });
 
 describe("loadConfig — no credentials file", () => {
+  it("local mode does not read cloud credentials", async () => {
+    process.env.HIVEMIND_BACKEND = "local";
+    existsSyncMock.mockReturnValue(true);
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()).toMatchObject({ token: "local", orgId: "local", apiUrl: "local" });
+    expect(readFileSyncMock).not.toHaveBeenCalled();
+  });
+
   it("returns null when nothing is set", async () => {
     const loadConfig = await importLoadConfig();
     expect(loadConfig()).toBeNull();
@@ -101,7 +111,7 @@ describe("loadConfig — no credentials file", () => {
 
 describe("loadConfig — credentials file", () => {
   it("loads creds when file exists and JSON is valid", async () => {
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     readFileSyncMock.mockReturnValue(JSON.stringify({
       token: "ftok", orgId: "forg", orgName: "ACME", userName: "alice",
       workspaceId: "w1", apiUrl: "https://custom",
@@ -119,14 +129,14 @@ describe("loadConfig — credentials file", () => {
   });
 
   it("returns null when credentials JSON is invalid", async () => {
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     readFileSyncMock.mockReturnValue("{not json}");
     const loadConfig = await importLoadConfig();
     expect(loadConfig()).toBeNull();
   });
 
   it("falls back to orgId when creds lack orgName", async () => {
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     readFileSyncMock.mockReturnValue(JSON.stringify({
       token: "t", orgId: "only-id",
     }));
@@ -135,7 +145,7 @@ describe("loadConfig — credentials file", () => {
   });
 
   it("backfills userName from userInfo() when creds lack it", async () => {
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     readFileSyncMock.mockReturnValue(JSON.stringify({
       token: "t", orgId: "o",
     }));
@@ -145,7 +155,7 @@ describe("loadConfig — credentials file", () => {
   });
 
   it("uses 'unknown' when userInfo() has no username", async () => {
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     readFileSyncMock.mockReturnValue(JSON.stringify({
       token: "t", orgId: "o",
     }));
@@ -155,7 +165,7 @@ describe("loadConfig — credentials file", () => {
   });
 
   it("env vars override credentials file for token + orgId", async () => {
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     readFileSyncMock.mockReturnValue(JSON.stringify({
       token: "file-tok", orgId: "file-org",
     }));

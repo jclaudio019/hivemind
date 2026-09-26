@@ -15,6 +15,8 @@ import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmS
 import { join } from "node:path";
 import { utcTimestamp } from "../utils/debug.js";
 import { deeplakeClientHeader } from "../utils/client-header.js";
+import { LocalBackend } from "../storage/local-backend.js";
+import { syncSharedSkill } from "../commands/shared-skills.js";
 import { extractPairs, SessionRow, Pair } from "./extractors/index.js";
 import {
   resolveSkillsRoot,
@@ -85,6 +87,7 @@ interface WorkerConfig {
 }
 
 const cfg: WorkerConfig = JSON.parse(readFileSync(process.argv[2], "utf-8"));
+const localBackend = process.env.HIVEMIND_BACKEND === "local" || cfg.apiUrl === "local" ? new LocalBackend() : null;
 
 // Restore the tuning dispatch BEFORE any imported shared-module function
 // runs. Function-scoped env reads (every `process.env.HIVEMIND_X` in this
@@ -123,6 +126,7 @@ function esc(s: string): string {
 const QUERY_TIMEOUT_MS = 30_000;
 
 async function query(sql: string, retries = 4): Promise<Record<string, unknown>[]> {
+  if (localBackend) return localBackend.query(sql);
   for (let attempt = 0; attempt <= retries; attempt++) {
     let r: Response;
     try {
@@ -351,6 +355,16 @@ function cleanup(keep: boolean): void {
   catch (e: any) { wlog(`cleanup failed: ${e.message}`); }
 }
 
+function syncLocally(path: string, name: string): void {
+  if (!localBackend) return;
+  try {
+    const result = syncSharedSkill({ path, name });
+    wlog(`synced learned skill to local agents: name=${name} linked=${result.linked} preserved=${result.skipped}`);
+  } catch (e: any) {
+    wlog(`local skill sync failed (non-fatal): ${e.message}`);
+  }
+}
+
 let keepTmpForInspection = false;
 
 async function main(): Promise<void> {
@@ -545,6 +559,7 @@ async function main(): Promise<void> {
         // Adopt the canonical (possibly length-capped) name writeNewSkill wrote
         // so local state + the org row match the frontmatter/dir on disk.
         verdict.name = result.name;
+        syncLocally(result.path, result.name);
         recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
         await recordToDeeplake(result, verdict);
       } catch (e: any) {
@@ -563,6 +578,7 @@ async function main(): Promise<void> {
           editor: cfg.userName,
         });
         wlog(`merged into skill: ${result.path} (v${result.version})`);
+        syncLocally(result.path, result.name);
         recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
         await recordToDeeplake(result, verdict);
       } catch (e: any) {
@@ -585,6 +601,7 @@ async function main(): Promise<void> {
             wlog(`wrote new skill (merge fallback): ${result.path}`);
             // Adopt the canonical capped name so state/org row match disk.
             verdict.name = result.name;
+            syncLocally(result.path, result.name);
             recordSkill(cfg.projectKey, verdict.name, watermarkUuid, watermarkDate);
             await recordToDeeplake(result, verdict);
           } catch (e2: any) {

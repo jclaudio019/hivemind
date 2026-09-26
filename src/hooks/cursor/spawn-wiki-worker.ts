@@ -74,7 +74,8 @@ LENGTH LIMIT: Keep the total summary under 4000 characters.`;
 export const wikiLog = wikiLogger.log;
 
 export function findCursorBin(): string {
-  return resolveCliBin("cursor-agent", "cursor-agent");
+  // Cursor's current CLI is `agent`; keep the legacy name as a fallback.
+  return resolveCliBin("agent", resolveCliBin("cursor-agent", "cursor-agent"));
 }
 
 export interface SpawnOptions {

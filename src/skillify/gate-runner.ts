@@ -121,12 +121,16 @@ export function findAgentBin(agent: Agent): string {
       ]) ?? "/usr/local/bin/codex";
     case "cursor":
       return firstExistingPath([
+        join(home, ".local", "bin", "agent"),
+        "/usr/local/bin/agent",
+        "/usr/bin/agent",
+        "/opt/homebrew/bin/agent",
         "/usr/local/bin/cursor-agent",
         "/usr/bin/cursor-agent",
         join(home, ".npm-global", "bin", "cursor-agent"),
         join(home, ".local", "bin", "cursor-agent"),
         "/opt/homebrew/bin/cursor-agent",
-      ]) ?? "/usr/local/bin/cursor-agent";
+      ]) ?? join(home, ".local", "bin", "agent");
     case "hermes":
       return firstExistingPath([
         join(home, ".local", "bin", "hermes"),

@@ -43,8 +43,8 @@ describe("cursor wiki-worker source", () => {
 });
 
 describe("cursor spawn-wiki-worker source", () => {
-  it("findCursorBin resolves `cursor-agent` cross-platform and falls back to the literal name", () => {
-    expect(SPAWN_SRC).toMatch(/resolveCliBin\("cursor-agent",\s*"cursor-agent"\)/);
+  it("findCursorBin resolves the current `agent` CLI with legacy fallback", () => {
+    expect(SPAWN_SRC).toMatch(/resolveCliBin\("agent",\s*resolveCliBin\("cursor-agent",\s*"cursor-agent"\)\)/);
     expect(SPAWN_SRC).not.toContain('resolveCliBin("codex"');
   });
 

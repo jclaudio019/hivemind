@@ -26,6 +26,7 @@ import { log as _log } from "../../utils/debug.js";
 import { EmbedClient } from "../../embeddings/client.js";
 import { embeddingsDisabled } from "../../embeddings/disable.js";
 import { deeplakeClientHeader } from "../../utils/client-header.js";
+import { LocalBackend } from "../../storage/local-backend.js";
 
 const dlog = (msg: string) => _log("hermes-wiki-worker", msg);
 
@@ -51,6 +52,7 @@ interface WorkerConfig {
 }
 
 const cfg: WorkerConfig = JSON.parse(readFileSync(process.argv[2], "utf-8"));
+const localBackend = process.env.HIVEMIND_BACKEND === "local" || cfg.apiUrl === "local" ? new LocalBackend() : null;
 const tmpDir = cfg.tmpDir;
 const tmpJsonl = join(tmpDir, "session.jsonl");
 const tmpSummary = join(tmpDir, "summary.md");
@@ -70,6 +72,7 @@ function esc(s: string): string {
 }
 
 async function query(sql: string, retries = 4): Promise<Record<string, unknown>[]> {
+  if (localBackend) return localBackend.query(sql);
   for (let attempt = 0; attempt <= retries; attempt++) {
     const r = await fetch(`${cfg.apiUrl}/workspaces/${cfg.workspaceId}/tables/query`, {
       method: "POST",

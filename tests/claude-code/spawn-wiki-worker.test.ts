@@ -313,7 +313,7 @@ describe("per-agent bin resolvers", () => {
   // (e.g. cursor probing `codex`) is caught.
   const RESOLVERS: Array<[string, () => string, string, string]> = [
     ["codex", findCodexBin, "codex", "codex"],
-    ["cursor", findCursorBin, "cursor-agent", "cursor-agent"],
+    ["cursor", findCursorBin, "cursor-agent", "agent"],
     ["hermes", findHermesBin, "hermes", "hermes"],
   ];
 
@@ -323,21 +323,22 @@ describe("per-agent bin resolvers", () => {
   const lookupCmd = process.platform === "win32" ? "where" : "which";
 
   it.each(RESOLVERS)("find%sBin returns the resolved path when the lookup succeeds", (_n, fn, _fallback, cli) => {
+    if (cli === "agent") vi.mocked(execFileSync).mockReturnValueOnce("/usr/local/bin/legacy-cursor-agent\n");
     vi.mocked(execFileSync).mockReturnValueOnce("/usr/local/bin/the-cli\n");
     expect(fn()).toBe("/usr/local/bin/the-cli");
-    expect(execFileSync).toHaveBeenCalledWith(lookupCmd, [cli], { encoding: "utf-8", windowsHide: true });
+    expect(execFileSync).toHaveBeenLastCalledWith(lookupCmd, [cli], { encoding: "utf-8", windowsHide: true });
   });
 
   it.each(RESOLVERS)("find%sBin falls back to the literal name when the lookup fails", (_n, fn, fallback, cli) => {
-    vi.mocked(execFileSync).mockImplementationOnce(() => { throw new Error("not found"); });
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error("not found"); });
     expect(fn()).toBe(fallback);
-    expect(execFileSync).toHaveBeenCalledWith(lookupCmd, [cli], { encoding: "utf-8", windowsHide: true });
+    expect(execFileSync).toHaveBeenLastCalledWith(lookupCmd, [cli], { encoding: "utf-8", windowsHide: true });
   });
 
   it.each(RESOLVERS)(
     "find%sBin falls back to the literal name when the lookup prints no matches",
-    (_n, fn, fallback) => {
-      vi.mocked(execFileSync).mockReturnValueOnce("  \n");
+    (_n, fn, fallback, cli) => {
+      vi.mocked(execFileSync).mockReturnValue("  \n");
       expect(fn()).toBe(fallback);
     },
   );

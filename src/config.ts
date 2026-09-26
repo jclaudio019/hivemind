@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, userInfo } from "node:os";
+import { isLocalMode, LOCAL_ROOT } from "./storage/local-mode.js";
 
 export interface Config {
   token: string;
@@ -31,10 +32,11 @@ interface Credentials {
 
 export function loadConfig(): Config | null {
   const home = homedir();
+  const local = isLocalMode();
   const credPath = join(home, ".deeplake", "credentials.json");
 
   let creds: Credentials | null = null;
-  if (existsSync(credPath)) {
+  if (!local && existsSync(credPath)) {
     try {
       creds = JSON.parse(readFileSync(credPath, "utf-8"));
     } catch {
@@ -44,17 +46,17 @@ export function loadConfig(): Config | null {
 
   // Using `process.env.X` directly (not aliasing) so esbuild's `define` in the
   // openclaw build can stub these to `undefined` at bundle-time.
-  const token = process.env.HIVEMIND_TOKEN ?? creds?.token;
-  const orgId = process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
+  const token = local ? "local" : process.env.HIVEMIND_TOKEN ?? creds?.token;
+  const orgId = local ? "local" : process.env.HIVEMIND_ORG_ID ?? creds?.orgId;
   if (!token || !orgId) return null;
 
   return {
     token,
     orgId,
-    orgName: creds?.orgName ?? orgId,
+    orgName: local ? "local" : creds?.orgName ?? orgId,
     userName: creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
-    apiUrl: process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
+    apiUrl: local ? "local" : process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",
     sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
     skillsTableName: process.env.HIVEMIND_SKILLS_TABLE ?? "skills",
@@ -79,6 +81,6 @@ export function loadConfig(): Config | null {
     // UPDATE-or-INSERT path (which is vulnerable to UPDATE-coalescing).
     docsTableName: process.env.HIVEMIND_DOCS_TABLE ?? "hivemind_docs",
     codebaseTableName: process.env.HIVEMIND_CODEBASE_TABLE ?? "codebase",
-    memoryPath: process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
+    memoryPath: local ? join(LOCAL_ROOT, "memory") : process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
   };
 }

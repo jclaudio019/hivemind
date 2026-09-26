@@ -17,6 +17,8 @@ import {
 } from "./deeplake-schema.js";
 import { enqueueNotification } from "./notifications/queue.js";
 import { loadCredentials } from "./commands/auth-creds.js";
+import { LocalBackend } from "./storage/local-backend.js";
+import { isLocalMode } from "./storage/local-mode.js";
 
 // index-marker-store touches node:fs. Load it lazily so bundlers that split
 // chunks (e.g. the openclaw plugin build) can put fs operations in a separate
@@ -259,6 +261,7 @@ export class DeeplakeApi {
   private _pendingRows: WriteRow[] = [];
   private _sem = new Semaphore(MAX_CONCURRENCY);
   private _tablesCache: string[] | null = null;
+  private readonly local: LocalBackend | null;
 
   constructor(
     private token: string,
@@ -266,10 +269,13 @@ export class DeeplakeApi {
     private orgId: string,
     private workspaceId: string,
     readonly tableName: string,
-  ) {}
+  ) {
+    this.local = isLocalMode() ? new LocalBackend() : null;
+  }
 
   /** Execute SQL with retry on transient errors and bounded concurrency. */
   async query(sql: string, signal?: AbortSignal): Promise<Record<string, unknown>[]> {
+    if (this.local) return this.local.query(sql);
     const startedAt = Date.now();
     const summary = summarizeSql(sql);
     traceSql(`query start: ${summary}`);
@@ -489,6 +495,7 @@ export class DeeplakeApi {
 
   /** List all tables in the workspace (with retry). */
   async listTables(forceRefresh = false): Promise<string[]> {
+    if (this.local) return this.local.listTables();
     if (!forceRefresh && this._tablesCache) return [...this._tablesCache];
 
     const { tables, cacheable } = await this._fetchTables();

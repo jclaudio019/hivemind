@@ -11,6 +11,7 @@
 
 import { execSync } from "node:child_process";
 import { loadConfig } from "../config.js";
+import { isLocalMode } from "../storage/local-mode.js";
 import { runDocsOnboarding } from "../docs/onboarding.js";
 import { tryGitTopLevel } from "../graph/git-hook-install.js";
 import { loadCurrentSnapshot } from "../graph/load-current.js";
@@ -542,7 +543,7 @@ export async function runBuildCommand(args: string[]): Promise<void> {
   const pushOutcome = await pushSnapshot(snapshot, worktreeId, { cwd });
   switch (pushOutcome.kind) {
     case "inserted":
-      console.log(`Cloud:         pushed to codebase table (commit ${pushOutcome.commitSha.slice(0, 7)})`);
+      console.log(`${isLocalMode() ? "Local" : "Cloud"}:         pushed to codebase table (commit ${pushOutcome.commitSha.slice(0, 7)})`);
       break;
     case "inserted-with-duplicate-race":
       console.warn(`Cloud:         pushed (commit ${pushOutcome.commitSha.slice(0, 7)}) but ${pushOutcome.rowCount} rows now share`);

@@ -49,6 +49,7 @@ import { drainSessionStart } from "../../notifications/index.js";
 import { renderModelChannelContext } from "../../notifications/delivery/model-channel.js";
 import { sessionEventCachePath } from "../session-event-cache.js";
 import { loadCredentials } from "../../commands/auth.js";
+import { isLocalMode } from "../../storage/local-mode.js";
 const log = (msg: string) => _log("hermes-capture", msg);
 
 /**
@@ -137,6 +138,7 @@ async function main(): Promise<void> {
 
   const sessionsTable = config.sessionsTableName;
   const api = new DeeplakeApi(config.token, config.apiUrl, config.orgId, config.workspaceId, sessionsTable);
+  if (isLocalMode()) await api.ensureSessionsTable(sessionsTable);
 
   const ts = new Date().toISOString();
   // Hermes sends `model` + `platform` nested in `extra` (everything that isn't
@@ -241,7 +243,7 @@ async function main(): Promise<void> {
     }
   }
 
-  log("capture ok → cloud");
+  log(isLocalMode() ? "capture ok → local" : "capture ok → cloud");
 
   // Mirror the event into the local per-session cache (row-for-row identical
   // to the `message` column just INSERTed) so the wiki-worker reads it instead

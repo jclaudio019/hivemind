@@ -9,6 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isLocalMode } from "../storage/local-mode.js";
 
 const GITHUB_RAW_PKG = "https://raw.githubusercontent.com/activeloopai/hivemind/main/package.json";
 
@@ -72,6 +73,7 @@ export function getInstalledVersion(bundleDir: string, pluginManifestDir: string
  * update available".
  */
 export async function getLatestVersion(timeoutMs = 3000): Promise<string | null> {
+  if (isLocalMode()) return null;
   try {
     const res = await fetch(GITHUB_RAW_PKG, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;

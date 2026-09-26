@@ -84,7 +84,7 @@ describe("resolveDocLlmSpec (per-agent LLM seam)", () => {
   it("auto-detects the host agent from installed CLIs, stdin-safe first, fail-loud on none", () => {
     expect(detectHostAgent((b) => (b === "codex" ? "/bin/codex" : null))).toBe("codex");
     expect(detectHostAgent((b) => (b === "claude" || b === "codex" ? `/bin/${b}` : null))).toBe("claude");
-    expect(detectHostAgent((b) => (b === "cursor-agent" ? "/bin/ca" : null))).toBe("cursor");
+    expect(detectHostAgent((b) => (b === "agent" ? "/bin/agent" : null))).toBe("cursor");
     expect(() => detectHostAgent(() => null)).toThrow(/No host agent CLI found/);
   });
 

@@ -140,6 +140,7 @@ describe("forceSessionEndTrigger", () => {
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0].agent).toBe("codex");
     expect(spawnCalls[0].reason).toBe("SessionEnd");
+    expect(spawnCalls[0].currentSessionId).toBeUndefined();
   });
 
   it("does NOT fire when worker lock is already held", () => {

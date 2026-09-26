@@ -38,6 +38,9 @@ import { docsInstallLines, docsHintShown, markDocsHintShown } from "../docs/inst
 import { runUpdate } from "./update.js";
 import { renderCliHelpBlock } from "./skillify-spec.js";
 import { maybeAutoMineLocal } from "../skillify/spawn-mine-local-worker.js";
+import { runImportCommand } from "../commands/import-sessions.js";
+import { disableLocalMode, enableLocalMode, localModeStatus, LOCAL_ROOT } from "../storage/local-mode.js";
+import { syncSharedSkills } from "../commands/shared-skills.js";
 
 const AUTH_SUBCOMMANDS = new Set([
   "whoami",
@@ -163,6 +166,11 @@ Cross-agent helpers:
   hivemind context                             Print the rules + open-goals block on demand.
                                                Fallback for harnesses/pi/openclaw agents (no SessionStart hook)
                                                and read-only diagnostic for any agent.
+
+  hivemind import <file.jsonl> [files...]      Import historical local sessions.
+                                               Local mode only; use --agent hermes|codex|cursor|prime.
+  hivemind local enable|disable|status        Persist local SQLite mode.
+  hivemind skills sync                         Share Hermes skills locally.
 
 Account / org / workspace:
   hivemind whoami                          Show current user, org, workspace.
@@ -544,6 +552,37 @@ async function main(): Promise<void> {
 
   if (cmd === "context") {
     await runContextCommand(args.slice(1));
+    return;
+  }
+
+  if (cmd === "import") {
+    await runImportCommand(args.slice(1));
+    return;
+  }
+
+  if (cmd === "local") {
+    const sub = args[1];
+    if (sub === "enable") {
+      enableLocalMode();
+      log(`Local mode enabled: ${LOCAL_ROOT}`);
+      return;
+    }
+    if (sub === "disable") {
+      disableLocalMode();
+      log("Local mode disabled.");
+      return;
+    }
+    if (sub === "status") {
+      log(localModeStatus() ? `Local mode enabled: ${LOCAL_ROOT}` : "Local mode disabled.");
+      return;
+    }
+    warn("Usage: hivemind local enable|disable|status");
+    process.exit(1);
+  }
+
+  if (cmd === "skills" && args[1] === "sync") {
+    const result = syncSharedSkills();
+    log(`Shared skills: ${result.imported} imported, ${result.linked} linked, ${result.skipped} preserved (${result.root})`);
     return;
   }
 

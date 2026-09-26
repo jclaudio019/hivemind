@@ -96,7 +96,7 @@ describe("detectAvailableAgents / knownDocsAgents", () => {
 
   it("returns only installed agents, in priority order", () => {
     // Simulate: codex + cursor installed, claude + pi absent.
-    const installed = new Set(["codex", "cursor-agent"]);
+    const installed = new Set(["codex", "agent"]);
     const got = detectAvailableAgents((bin) => (installed.has(bin) ? `/usr/bin/${bin}` : null));
     expect(got).toEqual(["codex", "cursor"]);
   });

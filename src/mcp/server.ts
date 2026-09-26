@@ -27,6 +27,7 @@ import { deriveProjectKey } from "../utils/repo-identity.js";
 import { makeQueryEmbedder } from "../docs/embed.js";
 import { getVersion } from "../cli/version.js";
 import { startCoworkIngestLoop, coworkDataNoticeOnce } from "./cowork-ingest.js";
+import { isLocalMode } from "../storage/local-mode.js";
 
 interface ServerContext {
   api: DeeplakeApi;
@@ -37,7 +38,7 @@ interface ServerContext {
 
 function getContext(): ServerContext | { error: string } {
   const creds = loadCredentials();
-  if (!creds?.token) {
+  if (!isLocalMode() && !creds?.token) {
     return { error: "Not authenticated. Run `hivemind login` to sign in to Deeplake." };
   }
   const config = loadRoutedConfig();

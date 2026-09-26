@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Credentials } from "../../commands/auth-creds.js";
 import { log as _log } from "../../utils/debug.js";
+import { isLocalMode } from "../../storage/local-mode.js";
 
 const log = (msg: string) => _log("notifications-org-stats", msg);
 
@@ -160,6 +161,7 @@ function writeCache(scopeKey: string, data: OrgStats): void {
  *   4. On failure: return stale cache if any, else null
  */
 export async function fetchOrgStats(creds: Credentials | null): Promise<OrgStats | null> {
+  if (isLocalMode()) return null;
   if (!creds?.token) return null;
 
   const apiUrl = creds.apiUrl ?? DEFAULT_API_URL;

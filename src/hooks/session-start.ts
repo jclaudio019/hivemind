@@ -11,9 +11,10 @@ import { maybeSpawnDocsRefresh } from "../docs/auto-refresh-trigger.js";
 import { docsWikiContextNote } from "../docs/docs-context.js";
 import { deriveProjectKey } from "../utils/repo-identity.js";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { loadCredentials, saveCredentials, healDriftedOrgToken } from "../commands/auth.js";
 import { loadConfig } from "../config.js";
+import { isLocalMode } from "../storage/local-mode.js";
 import { resolveDirConfig } from "../dir-config.js";
 import { DeeplakeApi } from "../deeplake-api.js";
 import { readStdin } from "../utils/stdin.js";
@@ -138,6 +139,17 @@ async function main(): Promise<void> {
   }
 
   let creds = loadCredentials();
+  if (!creds && isLocalMode()) {
+    creds = {
+      token: "local",
+      orgId: "local",
+      orgName: "local",
+      userName: userInfo().username || "local",
+      workspaceId: "default",
+      apiUrl: "local",
+      savedAt: new Date().toISOString(),
+    };
+  }
 
   if (!creds?.token) {
     log("no credentials found — run /hivemind:login to authenticate");
@@ -173,7 +185,7 @@ async function main(): Promise<void> {
   // can stall for tens of seconds against a slow/unreachable backend, and
   // autoUpdate has no dependency on table state. Run it first so the user
   // sees the upgrade notice promptly even when the API is down.
-  await autoUpdate(creds, { agent: "claude" });
+  if (!isLocalMode()) await autoUpdate(creds, { agent: "claude" });
 
   // Resolve the installed plugin version once up front — it's stamped on
   // every row this session writes (placeholder + capture) and is also used

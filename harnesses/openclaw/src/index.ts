@@ -295,6 +295,7 @@ function isNewer(latest: string, current: string): boolean {
 }
 
 async function checkForUpdate(logger: PluginLogger): Promise<void> {
+  if (inheritedEnv.env.HIVEMIND_BACKEND === "local") return;
   try {
     const current = getInstalledVersion();
     if (!current) return;
@@ -585,6 +586,7 @@ function detectOpenclawGateAgent(): GateAgent | null {
   const candidates: Array<[GateAgent, string]> = [
     ["claude_code", "claude"],
     ["codex", "codex"],
+    ["cursor", "agent"],
     ["cursor", "cursor-agent"],
     ["hermes", "hermes"],
     ["pi", "pi"],
@@ -919,6 +921,9 @@ export default definePluginEntry({
         handler: async () => {
           const current = getInstalledVersion();
           if (!current) return { text: "Could not determine installed version." };
+          if (inheritedEnv.env.HIVEMIND_BACKEND === "local") {
+            return { text: `Current version: ${current}. Local mode skips online update checks.` };
+          }
           try {
             // 10s timeout matches checkForUpdate (see #105, #109). The 3s
             // budget here was too aggressive even off cold start, since

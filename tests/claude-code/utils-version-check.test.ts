@@ -211,6 +211,14 @@ describe("getLatestVersion (network + timeout)", () => {
     expect(await getLatestVersion()).toBe("0.6.50");
   });
 
+  it("does not check GitHub in local mode", async () => {
+    process.env.HIVEMIND_BACKEND = "local";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    expect(await getLatestVersion()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    delete process.env.HIVEMIND_BACKEND;
+  });
+
   it("returns null on a non-ok HTTP response (e.g. 502)", async () => {
     globalThis.fetch = vi.fn(async () => ({
       ok: false,

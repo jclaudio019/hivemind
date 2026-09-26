@@ -14,6 +14,7 @@
 import type { Credentials } from "../../commands/auth-creds.js";
 import type { Notification, Severity } from "../types.js";
 import { log as _log } from "../../utils/debug.js";
+import { isLocalMode } from "../../storage/local-mode.js";
 
 const log = (msg: string) => _log("notifications-backend", msg);
 
@@ -82,6 +83,7 @@ function toClient(n: ServerNotification): Notification | null {
 export async function fetchBackendNotifications(
   creds: Credentials | null,
 ): Promise<Notification[]> {
+  if (isLocalMode()) return [];
   if (!creds?.token) return [];
 
   const apiUrl = creds.apiUrl ?? DEFAULT_API_URL;
