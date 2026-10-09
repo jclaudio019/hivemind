@@ -10,9 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * unauthenticated, success, and error branches.
  */
 
+const summaryEmbedMock = vi.fn();
+vi.mock("../../src/embeddings/embed-summary.js", () => ({embedSummaryWithWarmup: (...args: unknown[]) => summaryEmbedMock(...args)}));
+vi.mock("../../src/embeddings/disable.js", () => ({embeddingsDisabled: () => false}));
+const queryEmbedMock = vi.fn();
+vi.mock("../../src/docs/embed.js", () => ({ makeQueryEmbedder: () => queryEmbedMock }));
 const loadCredentialsMock = vi.fn();
 const loadConfigMock = vi.fn();
 const queryMock = vi.fn();
+const ensureTableMock = vi.fn();
+const isLocalModeMock = vi.fn();
 const searchDeeplakeTablesMock = vi.fn();
 const searchDocsMock = vi.fn();
 const buildGrepSearchOptionsMock = vi.fn();
@@ -30,14 +37,18 @@ vi.mock("../../src/config.js", () => ({
 }));
 vi.mock("../../src/deeplake-api.js", () => ({
   DeeplakeApi: class {
+    ensureTable() { return ensureTableMock(); }
     query(sql: string) { return queryMock(sql); }
   },
 }));
+vi.mock("../../src/storage/local-mode.js", () => ({ isLocalMode: () => isLocalModeMock() }));
 vi.mock("../../src/utils/sql.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/utils/sql.js")>();
   return actual; // use real sqlStr / sqlLike for fidelity
 });
-vi.mock("../../src/shell/grep-core.js", () => ({
+vi.mock("../../src/shell/grep-core.js", async (importOriginal) => ({
+  serializeFloat4Array: (await importOriginal<typeof import("../../src/shell/grep-core.js")>()).serializeFloat4Array,
+  memorySearchFilter: (await importOriginal<typeof import("../../src/shell/grep-core.js")>()).memorySearchFilter,
   searchDeeplakeTables: (...a: unknown[]) => searchDeeplakeTablesMock(...a),
   searchDocs: (...a: unknown[]) => searchDocsMock(...a),
   buildGrepSearchOptions: (...a: unknown[]) => buildGrepSearchOptionsMock(...a),
@@ -75,9 +86,13 @@ async function importServer(): Promise<void> {
 }
 
 beforeEach(() => {
+  summaryEmbedMock.mockReset().mockResolvedValue(null);
+  queryEmbedMock.mockReset().mockResolvedValue(null);
   loadCredentialsMock.mockReset().mockReturnValue({ token: "t" });
   loadConfigMock.mockReset().mockReturnValue(validConfig);
   queryMock.mockReset().mockResolvedValue([]);
+  ensureTableMock.mockReset().mockResolvedValue(undefined);
+  isLocalModeMock.mockReset().mockReturnValue(false);
   searchDeeplakeTablesMock.mockReset().mockResolvedValue([]);
   searchDocsMock.mockReset().mockResolvedValue([]);
   buildGrepSearchOptionsMock.mockReset().mockReturnValue({ limit: 10 });
@@ -93,7 +108,7 @@ describe("MCP server — registration shape", () => {
   it("registers exactly the hivemind tools, named and described", async () => {
     await importServer();
     expect(Array.from(registeredTools.keys()).sort()).toEqual([
-      "hivemind_docs_search", "hivemind_index", "hivemind_read", "hivemind_search",
+      "hivemind_docs_search", "hivemind_index", "hivemind_read", "hivemind_save_summary", "hivemind_search",
     ]);
     for (const tool of registeredTools.values()) {
       expect(typeof tool.config.description).toBe("string");
@@ -122,6 +137,58 @@ describe("hivemind_docs_search", () => {
 });
 
 describe("hivemind_search", () => {
+  it("passes explicit filters and applies the same scope to hybrid coverage", async () => {
+    queryEmbedMock.mockResolvedValue([1, 0]);
+    queryMock.mockResolvedValue([{total:2, embedded:1}]);
+    await importServer();
+    await registeredTools.get("hivemind_search")!.handler({query:"S12", project:"veronica-os", path_prefix:"/summaries/joseclaudio/", mode:"hybrid"});
+    const opts = searchDeeplakeTablesMock.mock.calls[0][3];
+    expect(opts).toMatchObject({project:"veronica-os", pathPrefix:"/summaries/joseclaudio/", retrievalHistory:true});
+    for (const [sql] of queryMock.mock.calls) {
+      expect(sql).toContain("project = 'veronica-os'");
+      expect(sql).toContain("path LIKE '/summaries/joseclaudio/%'");
+      expect(sql).not.toContain("OR project = ''");
+    }
+  });
+  it("explicit raw prefix retains tool history", async () => {
+    await importServer();
+    await registeredTools.get("hivemind_search")!.handler({query:"S12", path_prefix:"/sessions/joseclaudio/"});
+    expect(searchDeeplakeTablesMock.mock.calls[0][3].retrievalHistory).toBe(false);
+  });
+  it("hybrid explicitly falls back when query embeddings are unavailable", async () => {
+    await importServer();
+    const out = await registeredTools.get("hivemind_search")!.handler({ query: "needle", mode: "hybrid" }) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("query embeddings unavailable; exact lexical fallback");
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+  it("hybrid explicitly falls back when stored embeddings are absent", async () => {
+    queryEmbedMock.mockResolvedValue([0.1, 0.2]);
+    queryMock.mockResolvedValue([{ total: 10, embedded: 0 }]);
+    await importServer();
+    const out = await registeredTools.get("hivemind_search")!.handler({ query: "needle", mode: "hybrid" }) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("0/20 rows; exact lexical fallback");
+    expect(searchDeeplakeTablesMock.mock.calls[0][3].queryEmbedding).toBeUndefined();
+  });
+  it("hybrid supplies a query vector and reports embedding coverage", async () => {
+    queryEmbedMock.mockResolvedValue([0.1, 0.2]);
+    queryMock.mockResolvedValue([{ total: 10, embedded: 4 }]);
+    searchDeeplakeTablesMock.mockResolvedValue([{ path: "/summaries/alice/a.md", content: "related concept" }]);
+    await importServer();
+    const out = await registeredTools.get("hivemind_search")!.handler({ query: "worker routing", mode: "hybrid" }) as { content: { text: string }[] };
+    expect(searchDeeplakeTablesMock.mock.calls[0][3].queryEmbedding).toEqual([0.1, 0.2]);
+    expect(out.content[0].text).toContain("8/20");
+  });
+  it("keeps exact phrases, caps total hits, and excerpts the match", async () => {
+    buildGrepSearchOptionsMock.mockReturnValue({ multiWordPatterns: ["worker", "attempt"] });
+    searchDeeplakeTablesMock.mockResolvedValue(Array.from({ length: 6 }, (_, i) => ({
+      path: `/summaries/alice/${i}.md`, content: "x".repeat(900) + "worker attempt" + "y".repeat(900),
+    })));
+    await importServer();
+    const out = await registeredTools.get("hivemind_search")!.handler({ query: "worker attempt", limit: 3 }) as { content: { text: string }[] };
+    expect(searchDeeplakeTablesMock.mock.calls[0][3].multiWordPatterns).toBeUndefined();
+    expect(out.content[0].text.match(/\[\/summaries/g)).toHaveLength(3);
+    expect(out.content[0].text).toContain("worker attempt");
+  });
   it("not authenticated → returns the auth-error text", async () => {
     loadCredentialsMock.mockReturnValue(null);
     await importServer();
@@ -391,5 +458,43 @@ describe("error-message coercion (non-Error rejections)", () => {
     await importServer();
     const out = await registeredTools.get("hivemind_index")!.handler({}) as { content: { text: string }[] };
     expect(out.content[0].text).toContain("Index failed: index-string-rejection");
+  });
+});
+
+describe("hivemind_save_summary", () => {
+  it("embeds newly saved local checkpoints through the existing summary helper", async () => {
+    isLocalModeMock.mockReturnValue(true);
+    summaryEmbedMock.mockResolvedValue([1,0]);
+    await importServer();
+    await registeredTools.get("hivemind_save_summary")!.handler({summary:"Real checkpoint",session_id:"existing-session"});
+    expect(summaryEmbedMock).toHaveBeenCalledWith("Real checkpoint", "document");
+    expect(queryMock.mock.calls[0][0]).toContain("summary_embedding");
+    expect(queryMock.mock.calls[0][0]).toContain("ARRAY[1,0]::float4[]");
+  });
+
+  it("writes escaped Markdown only in local mode", async () => {
+    isLocalModeMock.mockReturnValue(true);
+    await importServer();
+    const out = await registeredTools.get("hivemind_save_summary")!.handler({
+      session_id: "chat-1",
+      project: "Lumina",
+      summary: "# Checkpoint\nO'Brien's decision",
+    }) as { content: { text: string }[] };
+    expect(out.content[0].text).toContain("Saved local Hivemind checkpoint at /summaries/alice/chatgpt/chat-1-");
+    expect(ensureTableMock).toHaveBeenCalledOnce();
+    expect(queryMock).toHaveBeenCalledOnce();
+    expect(queryMock.mock.calls[0][0]).toContain("O''Brien''s decision");
+    expect(queryMock.mock.calls[0][0]).toContain("'Lumina'");
+  });
+
+  it("refuses cloud-mode writes and path-like session IDs", async () => {
+    await importServer();
+    const handler = registeredTools.get("hivemind_save_summary")!.handler;
+    const cloud = await handler({ summary: "checkpoint", session_id: "chat-1" }) as { content: { text: string }[] };
+    expect(cloud.content[0].text).toContain("disabled unless Hivemind local mode is enabled");
+    isLocalModeMock.mockReturnValue(true);
+    const unsafe = await handler({ summary: "checkpoint", session_id: "../outside" }) as { content: { text: string }[] };
+    expect(unsafe.content[0].text).toContain("session_id may contain only");
+    expect(queryMock).not.toHaveBeenCalled();
   });
 });

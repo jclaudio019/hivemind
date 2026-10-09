@@ -54,7 +54,7 @@ export function loadConfig(): Config | null {
     token,
     orgId,
     orgName: local ? "local" : creds?.orgName ?? orgId,
-    userName: creds?.userName || userInfo().username || "unknown",
+    userName: process.env.HIVEMIND_USER_NAME || creds?.userName || userInfo().username || "unknown",
     workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
     apiUrl: local ? "local" : process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",

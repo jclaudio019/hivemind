@@ -14,6 +14,7 @@
  *   3. refineGrepMatches: line-by-line regex match with the usual grep flags.
  */
 
+import { parseSessionJson } from "../utils/session-json.js";
 import type { DeeplakeApi } from "../deeplake-api.js";
 import { sqlStr, sqlLike, sqlIdent } from "../utils/sql.js";
 
@@ -54,6 +55,9 @@ export interface SearchOptions {
   limit?: number;
   /** Scope docs search to one project (legacy '' rows always included). */
   project?: string;
+  /** Literal memory path prefix and MCP-only history preference. */
+  pathPrefix?: string;
+  retrievalHistory?: boolean;
   /**
    * If set, switches to semantic (cosine) search via Deeplake's `<#>` operator
    * against `summary_embedding` / `message_embedding` FLOAT4[] columns. When
@@ -203,7 +207,8 @@ export function normalizeContent(path: string, raw: string): string {
   if (!path.includes("/sessions/")) return raw;
   if (!raw || raw[0] !== "{") return raw;
   let obj: any;
-  try { obj = JSON.parse(raw); } catch { return raw; }
+  obj = parseSessionJson(raw);
+  if (!obj) return raw;
 
   // ── Turn-array session shape: { turns: [...] } ───────────────────────────
   //
@@ -305,6 +310,18 @@ function buildPathCondition(targetPath: string): string {
  * The lookup always goes through a single top-level SQL query so one grep
  * maps to one round-trip.
  */
+/** Shared scope for candidates and coverage. Other grep/docs callers retain their defaults. */
+export function memorySearchFilter(opts: Pick<SearchOptions, "project" | "pathPrefix" | "retrievalHistory">, sessions: boolean): string {
+  let filter = opts.project !== undefined ? ` AND project = '${sqlStr(opts.project)}'` : "";
+  if (opts.pathPrefix) filter += ` AND path LIKE '${sqlLike(opts.pathPrefix)}%' ESCAPE '\\'`;
+  // Only captured event envelopes are excluded. User/assistant text and stored
+  // originals remain intact; explicit /sessions/ searches can inspect tools.
+  if (sessions && opts.retrievalHistory) {
+    filter += ` AND COALESCE(NULLIF(message ->> 'type', 'event'), message -> 'raw' -> 'payload' ->> 'type', '') NOT IN ('tool_call', 'tool_result', 'function_call', 'function_call_output')`;
+  }
+  return filter;
+}
+
 export async function searchDeeplakeTables(
   api: DeeplakeApi,
   memoryTable: string,
@@ -320,6 +337,8 @@ export async function searchDeeplakeTables(
 ): Promise<ContentRow[]> {
   const { pathFilter, contentScanOnly, likeOp, escapedPattern, prefilterPattern, prefilterPatterns, queryEmbedding, multiWordPatterns } = opts;
   const limit = opts.limit ?? 100;
+  const memScope = memorySearchFilter(opts, false);
+  const sessScope = memorySearchFilter(opts, true);
 
   // ── Hybrid (lexical + semantic) branch ───────────────────────────────────
   // Runs both halves in a single UNION ALL query so each grep = one round-
@@ -357,16 +376,16 @@ export async function searchDeeplakeTables(
           ? prefilterPatterns
           : (prefilterPattern ? [prefilterPattern] : []))
       : [escapedPattern];
-    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex);
-    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex);
+    const memLexFilter = buildContentFilter("summary::text", likeOp, filterPatternsForLex, opts.retrievalHistory !== undefined);
+    const sessLexFilter = buildContentFilter("message::text", likeOp, filterPatternsForLex, opts.retrievalHistory !== undefined);
 
     const memLexQuery = memLexFilter
       ? `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, 1.0 AS score ` +
-        `FROM "${memoryTable}" WHERE 1=1${pathFilter}${memLexFilter} LIMIT ${lexicalLimit}`
+        `FROM "${memoryTable}" WHERE 1=1${pathFilter}${memScope}${memLexFilter} LIMIT ${lexicalLimit}`
       : null;
     const sessLexQuery = sessLexFilter
       ? `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, 1.0 AS score ` +
-        `FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessLexFilter} LIMIT ${lexicalLimit}`
+        `FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessScope}${sessLexFilter} LIMIT ${lexicalLimit}`
       : null;
 
     // Filter out rows with a missing OR empty embedding. ALTER TABLE ADD
@@ -380,12 +399,12 @@ export async function searchDeeplakeTables(
     const memSemQuery =
       `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date, ` +
       `(summary_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter} ` +
+      `FROM "${memoryTable}" WHERE ARRAY_LENGTH(summary_embedding, 1) > 0${pathFilter}${memScope} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
     const sessSemQuery =
       `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date, ` +
       `(message_embedding <#> ${vecLit}) AS score ` +
-      `FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter} ` +
+      `FROM "${sessionsTable}" WHERE ARRAY_LENGTH(message_embedding, 1) > 0${pathFilter}${sessScope} ` +
       `ORDER BY score DESC LIMIT ${semanticLimit}`;
 
     const parts = [memSemQuery, sessSemQuery];
@@ -397,7 +416,7 @@ export async function searchDeeplakeTables(
     const rows = await api.query(
       `SELECT path, content, source_order, creation_date, score FROM (` +
       unionSql +
-      `) AS combined ORDER BY score DESC LIMIT ${outerLimit}`
+      `) AS combined ORDER BY ${opts.retrievalHistory ? "source_order, " : ""}score DESC LIMIT ${outerLimit}`
     );
 
     if (meta && rows.length >= outerLimit) meta.truncated = true;
@@ -417,16 +436,16 @@ export async function searchDeeplakeTables(
   const filterPatterns = contentScanOnly
     ? (prefilterPatterns && prefilterPatterns.length > 0 ? prefilterPatterns : (prefilterPattern ? [prefilterPattern] : []))
     : (multiWordPatterns && multiWordPatterns.length > 1 ? multiWordPatterns : [escapedPattern]);
-  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns);
-  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns);
+  const memFilter = buildContentFilter("summary::text", likeOp, filterPatterns, opts.retrievalHistory !== undefined);
+  const sessFilter = buildContentFilter("message::text", likeOp, filterPatterns, opts.retrievalHistory !== undefined);
 
-  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memFilter} LIMIT ${limit}`;
-  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessFilter} LIMIT ${limit}`;
+  const memQuery = `SELECT path, summary::text AS content, 0 AS source_order, '' AS creation_date FROM "${memoryTable}" WHERE 1=1${pathFilter}${memScope}${memFilter} LIMIT ${limit}`;
+  const sessQuery = `SELECT path, message::text AS content, 1 AS source_order, COALESCE(creation_date::text, '') AS creation_date FROM "${sessionsTable}" WHERE 1=1${pathFilter}${sessScope}${sessFilter} LIMIT ${limit}`;
 
   const rows = await api.query(
     `SELECT path, content, source_order, creation_date FROM (` +
     `(${memQuery}) UNION ALL (${sessQuery})` +
-    `) AS combined ORDER BY path, source_order, creation_date`
+    `) AS combined ORDER BY ${opts.retrievalHistory ? "source_order, path" : "path, source_order"}, creation_date`
   );
 
   // Each subquery is capped at `limit`. If a source returned exactly `limit`
@@ -650,10 +669,12 @@ function buildContentFilter(
   column: string,
   likeOp: "LIKE" | "ILIKE",
   patterns: string[],
+  literalEscape = false,
 ): string {
+  const escape = literalEscape ? " ESCAPE '\\'" : "";
   if (patterns.length === 0) return "";
-  if (patterns.length === 1) return ` AND ${column} ${likeOp} '%${patterns[0]}%'`;
-  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'`).join(" OR ")})`;
+  if (patterns.length === 1) return ` AND ${column} ${likeOp} '%${patterns[0]}%'${escape}`;
+  return ` AND (${patterns.map((pattern) => `${column} ${likeOp} '%${pattern}%'${escape}`).join(" OR ")})`;
 }
 
 // ── Regex refinement (line-by-line grep) ────────────────────────────────────

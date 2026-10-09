@@ -81,6 +81,14 @@ function informationSchemaQuery(sql: string): { table: string } | null {
   return match ? { table: match[1].replace(/''/g, "'") } : null;
 }
 
+function sessionTypeSql(path: string): string {
+  // Keep full transcripts in SQLite, not JS objects, while filtering history.
+  // Match parseSessionJson: prefer valid originals, then undo SQL-doubled slashes.
+  const repaired = String.raw`replace(message, '\\', '\')`;
+  const json = `CASE WHEN json_valid(message) THEN message WHEN json_valid(${repaired}) THEN ${repaired} END`;
+  return `(CASE WHEN json_type(${json}, '${path}') = 'text' THEN json_extract(${json}, '${path}') END)`;
+}
+
 function normalizeSql(sql: string): string {
   return sql
     // PostgreSQL escape-string literals are ordinary SQLite string literals for
@@ -88,6 +96,8 @@ function normalizeSql(sql: string): string {
     .replace(/\bE'/g, "'")
     .replace(/\s+USING\s+deeplake_index\s*(?=\()/gi, "")
     .replace(/\s+USING\s+deeplake\s*;?\s*$/i, "")
+    .replace(/message\s*->\s*'raw'\s*->\s*'payload'\s*->>\s*'type'/gi, sessionTypeSql("$.raw.payload.type"))
+    .replace(/message\s*->>\s*'type'/gi, sessionTypeSql("$.type"))
     .replace(/::text\b/gi, "")
     .replace(/::jsonb\b/gi, "")
     .replace(/\bILIKE\b/gi, "LIKE")
