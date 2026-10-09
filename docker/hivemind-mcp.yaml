@@ -1,0 +1,15 @@
+name: hivemind-local
+title: Hivemind Local
+type: server
+image: hivemind-local:0.7.148
+description: Local-only Hivemind search and explicit ChatGPT conversation checkpoint storage.
+disableNetwork: true
+volumes:
+  - /Users/joseclaudio/.local-hivemind:/root/.local-hivemind:rw
+env:
+  - name: HIVEMIND_BACKEND
+    value: local
+  - name: HIVEMIND_LOCAL_ROOT
+    value: /root/.local-hivemind
+  - name: HIVEMIND_USER_NAME
+    value: joseclaudio

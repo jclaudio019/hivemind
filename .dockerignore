@@ -1,0 +1,7 @@
+.git
+node_modules
+dist
+bundle
+mcp/bundle
+coverage
+npm-debug.log*
