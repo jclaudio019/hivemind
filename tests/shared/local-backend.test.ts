@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { LocalBackend } from "../../src/storage/local-backend.js";
 import { DeeplakeApi } from "../../src/deeplake-api.js";
 import { searchDeeplakeTables } from "../../src/shell/grep-core.js";
+import { buildDirectSessionInsertSql } from "../../src/hooks/shared/session-insert-sql.js";
 
 describe("LocalBackend", () => {
   const roots: string[] = [];
@@ -18,6 +19,22 @@ describe("LocalBackend", () => {
     await expect(backend.query(`SELECT id, message FROM "sessions" WHERE id = 's1'`)).resolves.toEqual([
       { id: "s1", message: '{"type":"user_message"}' },
     ]);
+    backend.close();
+  });
+
+  it("preserves capture JSON containing E' through the local SQL boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hivemind-local-")); roots.push(root);
+    const backend = new LocalBackend(root);
+    await backend.query(`CREATE TABLE "sessions" (id TEXT, path TEXT, filename TEXT, message JSONB, message_embedding FLOAT4[], author TEXT, size_bytes INTEGER, project TEXT, description TEXT, agent TEXT, plugin_version TEXT, creation_date TEXT, last_update_date TEXT) USING deeplake`);
+    const message = JSON.stringify({ type: "user_message", content: "E'foo \\\\ and 'quoted'" });
+    const insertSql = buildDirectSessionInsertSql("sessions", {
+      id: "session-json-test", sessionPath: "/sessions/test.jsonl", filename: "test.jsonl",
+      jsonForSql: message.replace(/'/g, "''"), embeddingSql: "NULL", userName: "tester", sizeBytes: message.length,
+      projectName: "test", description: "", agent: "test", pluginVersion: "test", timestamp: "2026-01-01T00:00:00Z",
+    });
+    await backend.query(insertSql);
+    await expect(backend.query(`SELECT message FROM "sessions" WHERE id = 'session-json-test'`))
+      .resolves.toEqual([{ message }]);
     backend.close();
   });
 
