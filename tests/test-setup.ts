@@ -14,6 +14,11 @@ import { afterAll } from "vitest";
 
 const tmpDir = mkdtempSync(join(tmpdir(), "hivemind-test-config-"));
 process.env.HIVEMIND_CONFIG_PATH = join(tmpDir, "config.json");
+// Isolate backend selection and subprocesses from the user's enabled marker/DB.
+process.env.HOME = tmpDir;
+process.env.USERPROFILE = tmpDir;
+process.env.HIVEMIND_LOCAL_ROOT = join(tmpDir, ".local-hivemind");
+delete process.env.HIVEMIND_BACKEND;
 
 // Default to embeddings-enabled in the test env so existing tests that
 // expect the embed code path to run aren't surprised by the new

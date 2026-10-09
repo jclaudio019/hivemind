@@ -38,7 +38,10 @@ let home: string;
 let prevHome: string | undefined;
 
 function transcriptPath(): string {
-  const dir = join(home, ".config", "Claude", "local-agent-mode-sessions", "s1", ".claude", "projects", "proj");
+  const config = process.platform === "darwin"
+    ? join(home, "Library", "Application Support", "Claude")
+    : join(home, ".config", "Claude");
+  const dir = join(config, "local-agent-mode-sessions", "s1", ".claude", "projects", "proj");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${SESSION_ID}.jsonl`);
 }
