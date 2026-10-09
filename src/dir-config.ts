@@ -30,6 +30,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig, type Config } from "./config.js";
+import { resolveWorkspaceRef } from "./commands/auth-creds.js";
 
 /** Committed (shared) and local (personal, gitignored) filenames, local first. */
 export const DIR_CONFIG_FILENAMES = [".hivemind.local", ".hivemind"] as const;
@@ -106,7 +107,7 @@ export interface ResolvedDirConfig {
  *
  * The two concerns are INDEPENDENT:
  *   - `orgId` / `workspaceId` are IDENTITY — they apply to reads (memory
- *     search, recall, the VFS) as well as capture. Omitted fields fall back to
+ *     search, the VFS) as well as capture. Omitted fields fall back to
  *     the global identity in `base`.
  *   - `collect` is the CAPTURE switch — writes only. It never suppresses the
  *     identity overlay, so `{ "collect": false, "workspaceId": "x" }` reads
@@ -136,21 +137,36 @@ export function resolveDirConfig(
   if (!found) return { config: base, collect: true, found: null };
 
   const orgLocked = !!(envOverride ? envOverride.HIVEMIND_ORG_ID : process.env.HIVEMIND_ORG_ID);
-  const wsLocked = !!(envOverride ? envOverride.HIVEMIND_WORKSPACE_ID : process.env.HIVEMIND_WORKSPACE_ID);
+  const envWs = envOverride ? envOverride.HIVEMIND_WORKSPACE_ID : process.env.HIVEMIND_WORKSPACE_ID;
+  const orgId = orgLocked ? base.orgId : (found.raw.orgId ?? base.orgId);
+  // Always resolve the RAW reference against the final org: `base.workspaceId`
+  // was already mapped by loadConfig() against the login org, which is the
+  // wrong map once this file routes the org elsewhere.
+  const wsRef = envWs || found.raw.workspaceId || base.workspaceId;
   const config: Config = {
     ...base,
-    orgId: orgLocked ? base.orgId : (found.raw.orgId ?? base.orgId),
+    orgId,
     orgName: orgLocked ? base.orgName : (found.raw.orgName ?? found.raw.orgId ?? base.orgName),
-    workspaceId: wsLocked ? base.workspaceId : (found.raw.workspaceId ?? base.workspaceId),
+    workspaceId: resolveWorkspaceRef(base.workspaceAliases, orgId, wsRef),
   };
   return { config, collect: found.raw.collect !== false, found };
+}
+
+/**
+ * False when the nearest `.hivemind` / `.hivemind.local` says `"collect": false`.
+ * Session-start, notification and pre-tool-use hooks return early on false, so
+ * Hivemind is completely silent in that tree (not just capture-off). A nearer
+ * `{ "collect": true }` re-enables a repo below an opted-out parent.
+ */
+export function isHivemindEnabled(cwd: string): boolean {
+  return findDirConfig(cwd)?.raw.collect !== false;
 }
 
 /**
  * THE single entry point for a workspace-scoped Config.
  *
  * Any code path that builds a `DeeplakeApi` against per-directory workspace data
- * — CLI commands (goals, rules, skills), memory read/write hooks, recall — MUST
+ * — CLI commands (goals, rules, skills), memory read/write hooks — MUST
  * get its config from here, never from a bare `loadConfig()`. It folds the
  * nearest `.hivemind` (and the `HIVEMIND_*` env locks, via resolveDirConfig)
  * into one place, so routing can never again be half-wired across call sites.

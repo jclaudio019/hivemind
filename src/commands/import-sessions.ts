@@ -11,7 +11,7 @@ import { isLocalMode } from "../storage/local-mode.js";
 export interface ImportedEvent {
   id: string;
   session_id: string;
-  type: "user_message" | "assistant_message" | "tool_call" | "event";
+  type: "user_message" | "assistant_message" | "tool_call" | "tool_result" | "event";
   content: string;
   timestamp: string;
   source_agent: string;
@@ -22,12 +22,18 @@ export interface ImportedEvent {
 export function normalizeImportedLine(line: string, sessionId: string, sourceAgent: string, sourceFile: string, ordinal: number): ImportedEvent | null {
   let raw: Record<string, unknown>;
   try { raw = JSON.parse(line) as Record<string, unknown>; } catch { return null; }
-  const message = raw.message && typeof raw.message === "object" ? raw.message as Record<string, unknown> : raw;
-  const role = String(message.role ?? raw.role ?? "").toLowerCase();
-  const tool = message.tool_name ?? raw.tool_name ?? message.tool ?? raw.tool;
-  const type: ImportedEvent["type"] = tool || role === "tool" ? "tool_call" : role === "user" || role === "human" ? "user_message" : role === "assistant" ? "assistant_message" : "event";
-  const value = message.content ?? raw.content ?? raw.text ?? raw.message ?? raw.output ?? "";
-  const content = typeof value === "string" ? value : JSON.stringify(value);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const message = raw.message && typeof raw.message === "object" ? raw.message as Record<string, unknown>
+    : raw.payload && typeof raw.payload === "object" ? raw.payload as Record<string, unknown> : raw;
+  const kind = String(message.type ?? raw.type ?? "");
+  const role = String(message.role ?? raw.role ?? (kind === "user_message" ? "user" : kind === "agent_message" ? "assistant" : "")).toLowerCase();
+  const tool = message.tool_name ?? raw.tool_name ?? message.tool ?? raw.tool ?? (kind === "function_call" || kind === "tool_call" ? true : undefined);
+  const type: ImportedEvent["type"] = kind === "function_call_output" || kind === "tool_result" ? "tool_result"
+    : tool || role === "tool" ? "tool_call" : role === "user" || role === "human" ? "user_message" : role === "assistant" ? "assistant_message" : "event";
+  const value = message.content ?? message.text ?? message.message ?? message.output ?? message.arguments ?? raw.content ?? raw.text ?? raw.message ?? raw.output ?? "";
+  const content = typeof value === "string" ? value : Array.isArray(value)
+    ? value.map(block => block && typeof block === "object" && typeof block.text === "string" ? block.text : JSON.stringify(block)).join("\n")
+    : JSON.stringify(value);
   const timestamp = String(raw.timestamp ?? raw.created_at ?? raw.ts ?? message.timestamp ?? "");
   const id = createHash("sha256").update(`${sourceFile}\0${ordinal}\0${line}`).digest("hex").slice(0, 32);
   return { id, session_id: sessionId, type, content, timestamp, source_agent: sourceAgent, source_file: sourceFile, raw };
@@ -80,5 +86,5 @@ export async function runImportCommand(args: string[]): Promise<void> {
   const files = args.filter((arg, i) => !arg.startsWith("--") && !(agentIndex >= 0 && i === agentIndex + 1));
   if (!files.length) throw new Error("Usage: hivemind import <file.jsonl> [files...] [--agent hermes|codex|cursor|prime]");
   const result = await importSessionFiles(files, sourceAgent);
-  console.log(`Imported ${result.events} event(s) from ${result.files} file(s) into local Hivemind.`);
+  console.log(`Processed ${result.events} event(s) from ${result.files} file(s) into local Hivemind (already-present events are not inserted again).`);
 }

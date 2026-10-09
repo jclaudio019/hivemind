@@ -23,12 +23,14 @@ const ensureSessionsTableMock = vi.fn();
 const queryMock = vi.fn();
 const knownTablesMock = vi.fn();
 const autoUpdateMock = vi.fn();
+const resolveWorkspaceOverrideMock = vi.fn(async (creds: unknown, _log?: unknown) => ({ creds } as { creds: unknown; warning?: string }));
 
 vi.mock("../../src/utils/stdin.js", () => ({ readStdin: (...a: any[]) => stdinMock(...a) }));
 vi.mock("../../src/commands/auth.js", () => ({
   loadCredentials: (...a: any[]) => loadCredsMock(...a),
   saveCredentials: (...a: any[]) => saveCredsMock(...a),
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: (creds: unknown, log?: unknown) => resolveWorkspaceOverrideMock(creds, log),
 }));
 vi.mock("../../src/config.js", () => ({ loadConfig: (...a: any[]) => loadConfigMock(...a) }));
 vi.mock("../../src/utils/debug.js", () => ({
@@ -196,6 +198,20 @@ describe("session-start hook — guards", () => {
     expect(parsed.hookSpecificOutput.additionalContext).toContain("workspace: default");
   });
 
+  it("resolves the workspace override BEFORE loadConfig and surfaces its warning in the banner", async () => {
+    const order: string[] = [];
+    resolveWorkspaceOverrideMock.mockImplementationOnce(async (creds: unknown) => {
+      order.push("override");
+      return { creds, warning: "HIVEMIND_WORKSPACE_ID='Nope' does not match any workspace in this org" };
+    });
+    loadConfigMock.mockImplementation(() => { order.push("loadConfig"); return validConfig; });
+    const out = await runHook();
+    const parsed = JSON.parse(out!);
+    expect(order.indexOf("override")).toBeLessThan(order.indexOf("loadConfig"));
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("Logged in to Deeplake as org: acme");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain("HIVEMIND_WORKSPACE_ID='Nope' does not match");
+  });
+
   it("falls back to orgId when orgName is missing", async () => {
     // The banner reflects the effective (resolved) config; real loadConfig
     // sets orgName = orgId when creds lack an orgName, so drive that here.
@@ -231,12 +247,11 @@ describe("session-start hook — guards", () => {
       expect(ensureTableMock).toHaveBeenCalled();
     });
 
-    it("collect:false skips the placeholder/table setup and says capture is disabled", async () => {
+    it("collect:false makes the hook fully inactive — no context, no API calls", async () => {
       withHivemind({ collect: false });
       const out = await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
-      const ctx = JSON.parse(out!).hookSpecificOutput.additionalContext;
-      expect(ctx).toContain("capture is disabled for this directory");
-      // No capture → no DDL and no placeholder INSERT for this directory.
+      expect(out).toBeNull();
+      expect(queryMock).not.toHaveBeenCalled();
       expect(ensureTableMock).not.toHaveBeenCalled();
       expect(ensureSessionsTableMock).not.toHaveBeenCalled();
     });

@@ -20,6 +20,7 @@ vi.mock("../../src/commands/auth.js", () => ({
   // Pass-through stub — the heal helper is unit-tested in tests/claude-code/auth.test.ts.
   // Returning creds unchanged keeps these hook tests focused on the hook's own logic.
   healDriftedOrgToken: async (creds: unknown) => creds,
+  resolveWorkspaceOverride: async (creds: unknown) => ({ creds }),
 }));
 vi.mock("../../src/utils/debug.js", () => ({ log: (_tag: string, msg: string) => debugLogMock(msg) }));
 vi.mock("../../src/utils/version-check.js", async (importOriginal) => {
@@ -186,6 +187,22 @@ describe("hermes session-start hook — context payload", () => {
     expect(payload.context).toContain("org: o-99");
   });
 
+  it("identity line falls back to the stored creds when loadConfig returns null", async () => {
+    loadConfigMock.mockReturnValue(null);
+    loadCredentialsMock.mockReturnValue({ token: "t", orgName: "creds-org", workspaceId: "creds-ws" });
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).toContain("Logged in to Deeplake as org: creds-org (workspace: creds-ws)");
+  });
+
+  it("identity line uses orgId and the 'default' workspace when creds omit them", async () => {
+    loadConfigMock.mockReturnValue(null);
+    loadCredentialsMock.mockReturnValue({ token: "t", orgId: "org-id-1" });
+    await runHook();
+    const payload = JSON.parse(consoleLogMock.mock.calls[0][0] as string);
+    expect(payload.context).toContain("Logged in to Deeplake as org: org-id-1 (workspace: default)");
+  });
+
   it("omits the version notice when getInstalledVersion returns null", async () => {
     getInstalledVersionMock.mockReturnValue(null);
     await runHook();
@@ -288,10 +305,11 @@ describe("hermes session-start hook — per-directory .hivemind", () => {
     expect(ensureTableMock).toHaveBeenCalled();
   });
 
-  it("collect:false skips table setup and says capture is disabled", async () => {
+  it("collect:false makes the hook fully inactive — no context, no API calls", async () => {
     withHivemind({ collect: false });
     await runHook({ HIVEMIND_ORG_ID: undefined, HIVEMIND_WORKSPACE_ID: undefined });
-    expect(banner()).toContain("capture is disabled for this directory");
+    expect(consoleLogMock).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
     expect(ensureTableMock).not.toHaveBeenCalled();
     expect(ensureSessionsTableMock).not.toHaveBeenCalled();
   });

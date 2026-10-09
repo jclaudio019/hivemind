@@ -7,9 +7,16 @@ import {
   extractText,
   coworkDataNoticeOnce,
   summarizeIdleSessions,
+  buildCoworkQueueRow,
   COWORK_AGENT,
   type IngestState,
 } from "../../src/mcp/cowork-ingest.js";
+
+// Build fixture secrets from split literals at runtime so the source file never
+// contains a scannable vendor token (GitHub secret scanning would block this file).
+const j = (...parts: string[]): string => parts.join("");
+
+const fakeSessionConfig = { userName: "test-user", orgName: "test-org", workspaceId: "test-ws" };
 
 const fakeConfig = {} as Parameters<typeof summarizeIdleSessions>[0];
 
@@ -167,5 +174,62 @@ describe("coworkDataNoticeOnce", () => {
       if (prev === undefined) delete process.env.HIVEMIND_CAPTURE;
       else process.env.HIVEMIND_CAPTURE = prev;
     }
+  });
+});
+
+describe("secret redaction on the Cowork ingest path (#308)", () => {
+  const base = {
+    id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    session_id: "b27efa59-a8bc-4ea3-8b02-18cbc608ae17",
+    timestamp: "2026-06-26T15:02:13.529Z",
+    cwd: "/some/cowork/outputs",
+    agent: COWORK_AGENT,
+  };
+
+  // Parse the queued row message back to an object so we can assert field values.
+  function queuedMessage(entry: Record<string, unknown>): Record<string, unknown> {
+    return JSON.parse(buildCoworkQueueRow(entry, fakeSessionConfig).message) as Record<string, unknown>;
+  }
+
+  it("masks an OpenAI API key in a user_message content field", () => {
+    const secret = j("sk-", "ABCDEFGHIJKLMNOPQRSTUVWX");
+    const entry = { ...base, type: "user_message", content: `my key is ${secret}` };
+    const msg = queuedMessage(entry);
+    expect(msg.content).toBe("my key is sk-********");
+  });
+
+  it("masks a GitHub PAT in a tool_input field (e.g. curl auth header)", () => {
+    const secret = j("ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    const cmd = `curl -H "Authorization: token ${secret}" https://api.github.com`;
+    const entry = {
+      ...base,
+      type: "tool_call",
+      tool_name: "bash",
+      tool_use_id: "toolu_1",
+      tool_input: JSON.stringify({ cmd }),
+    };
+    const msg = queuedMessage(entry);
+    const toolInput = JSON.parse(String(msg.tool_input)) as { cmd: string };
+    expect(toolInput.cmd).toBe(`curl -H "Authorization: token ghp_********" https://api.github.com`);
+  });
+
+  it("masks a secret in a tool_response field", () => {
+    const secret = j("sk-", "ant-api03-ABCDEFGHIJKLMNOPQRSTUV_wx");
+    const entry = {
+      ...base,
+      type: "tool_result",
+      tool_use_id: "toolu_2",
+      tool_response: JSON.stringify({ api_key: secret }),
+    };
+    const msg = queuedMessage(entry);
+    const toolResponse = JSON.parse(String(msg.tool_response)) as { api_key: string };
+    // redactSecrets keeps the scheme prefix as a hint (sk-ant-) and masks the rest
+    expect(toolResponse.api_key).toBe("sk-ant-********");
+  });
+
+  it("leaves non-secret content untouched", () => {
+    const entry = { ...base, type: "user_message", content: "what is the weather in Tokyo?" };
+    const msg = queuedMessage(entry);
+    expect(msg.content).toBe("what is the weather in Tokyo?");
   });
 });

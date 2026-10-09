@@ -13,8 +13,10 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
+import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
+import { localSessionCredentials } from "../../storage/local-mode.js";
 import { readStdin } from "../../utils/stdin.js";
+import { isHivemindEnabled } from "../../dir-config.js";
 import { countLocalManifestEntries } from "../../skillify/local-manifest.js";
 import { maybeAutoMineLocal } from "../../skillify/spawn-mine-local-worker.js";
 import { log as _log } from "../../utils/debug.js";
@@ -79,8 +81,10 @@ async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
 
   const input = await readStdin<CodexSessionStartInput>();
+  if (!isHivemindEnabled(input.cwd ?? process.cwd())) return; // .hivemind "collect": false → fully inactive
 
-  let creds = loadCredentials();
+  let creds = localSessionCredentials() ?? loadCredentials();
+  let workspaceWarning = "";
 
   if (!creds?.token) {
     log("no credentials found — run auth login to authenticate");
@@ -89,6 +93,10 @@ async function main(): Promise<void> {
   } else {
     log(`credentials loaded: org=${creds.orgName ?? creds.orgId}`);
     creds = await healDriftedOrgToken(creds, log);
+    // Must run before the setup worker is spawned so it reads the learned alias.
+    const wsOverride = await resolveWorkspaceOverride(creds, log, input.cwd ?? process.cwd());
+    creds = wsOverride.creds;
+    workspaceWarning = wsOverride.warning ? `\n${wsOverride.warning}` : "";
   }
 
   // Spawn async setup (graph-deps provisioning, table creation, placeholder,
@@ -222,7 +230,7 @@ async function main(): Promise<void> {
   if (creds?.token) spawnGraphPullWorker(input.cwd, __bundleDir);
 
   const additionalContext = creds?.token
-    ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${versionNotice}`
+    ? `Hivemind: logged in as org ${creds.orgName ?? creds.orgId} (workspace: ${creds.workspaceId ?? "default"}).${workspaceWarning}${versionNotice}`
     : `Hivemind: not logged in. Run \`hivemind login\` to enable shared memory + skill sharing.${versionNotice}`;
 
   const systemMessage = (!creds?.token && localMined > 0)

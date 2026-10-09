@@ -1,3 +1,5 @@
+import { isLocalMode } from "../storage/local-mode.js";
+
 /**
  * SQL escaping utilities for Deeplake SQL API.
  *
@@ -10,8 +12,8 @@
  * Handles: single quotes, backslashes, NUL bytes, and control characters.
  */
 export function sqlStr(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
+  // SQLite treats backslashes literally; only the cloud dialect doubles them.
+  return (isLocalMode() ? value : value.replace(/\\/g, "\\\\"))
     .replace(/'/g, "''")
     .replace(/\0/g, "")
     .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
@@ -21,7 +23,8 @@ export function sqlStr(value: string): string {
  * Escape a string for use inside a SQL LIKE/ILIKE pattern.
  */
 export function sqlLike(value: string): string {
-  return sqlStr(value)
+  const escaped = sqlStr(value);
+  return (isLocalMode() ? escaped.replace(/\\/g, "\\\\") : escaped)
     .replace(/%/g, "\\%")
     .replace(/_/g, "\\_");
 }

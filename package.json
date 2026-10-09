@@ -1,6 +1,6 @@
 {
   "name": "@deeplake/hivemind",
-  "version": "0.7.148",
+  "version": "0.7.160",
   "description": "Cloud-backed persistent shared memory for AI agents powered by Deeplake",
   "type": "module",
   "repository": {
@@ -20,6 +20,7 @@
     "harnesses/codex/skills",
     "harnesses/cursor/bundle",
     "harnesses/hermes/bundle",
+    "harnesses/hermes/skills",
     "mcp/bundle",
     "harnesses/pi/extension-source",
     "harnesses/openclaw/dist",

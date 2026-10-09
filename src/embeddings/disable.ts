@@ -23,7 +23,7 @@ import { getEmbeddingsEnabled } from "../user-config.js";
  *
  * In either case: SessionStart skips the warmup, capture / wiki-worker
  * write rows with NULL in the embedding column, and `Grep` falls back to
- * BM25 / ILIKE matching on text columns. Existing rows' embeddings remain
+ * ILIKE (lexical substring) matching on text columns. Existing rows' embeddings remain
  * readable.
  *
  * Read-once: the status is cached for the lifetime of the (short-lived)

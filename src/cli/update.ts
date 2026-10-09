@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { getVersion } from "./version.js";
 import { log, warn } from "./util.js";
 import { isNewer } from "../utils/version-check.js";
+import { binNeedsShell, resolveCliBin, shellFile } from "../utils/resolve-cli-bin.js";
 
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/@deeplake/hivemind/latest";
 const PKG_NAME = "@deeplake/hivemind";
@@ -160,11 +161,101 @@ export interface UpdateOptions {
   spawn?: (cmd: string, args: string[]) => void;
   /** Override the lockfile path (tests). Default: `~/.deeplake/hivemind-update.lock`. */
   lockPathOverride?: string;
+  /** Inject the shim repair (tests). Default: the real removeNpmPowerShellShim. */
+  removeShim?: () => void;
 }
 
 const defaultSpawn = (cmd: string, args: string[]): void => {
-  execFileSync(cmd, args, { stdio: "inherit" });
+  // `npm` and `hivemind` are bare names here, and on Windows both resolve to a
+  // `.cmd` shim. Since the CVE-2024-27980 fix (Node 18.20 / 20.12) a `.cmd`
+  // cannot be spawned without a shell, so this threw ENOENT for every Windows
+  // user and the update never ran. resolveCliBin does the `where` lookup and
+  // already prefers a directly-spawnable `.exe` over a `.cmd`; shellFile quotes
+  // the path, which is required under `shell: true` because Node joins file and
+  // args into one unescaped command string — and the default npm global bin
+  // contains a space on any account whose user name does.
+  const bin = resolveCliBin(cmd, cmd);
+  const needsShell = binNeedsShell(bin);
+  execFileSync(needsShell ? shellFile(bin) : bin, args, {
+    stdio: "inherit",
+    shell: needsShell,
+  });
 };
+
+/**
+ * Delete the `hivemind.ps1` npm generates beside `hivemind.cmd`.
+ *
+ * npm's cmd-shim writes three shims for every global bin — `hivemind`,
+ * `hivemind.cmd` and `hivemind.ps1`. At a PowerShell prompt the bare name
+ * resolves to the `.ps1`, and a `.ps1` is subject to the execution policy while
+ * a `.cmd` is not. Under `Restricted` or `AllSigned` every later `hivemind ...`
+ * the user types therefore dies with PSSecurityException, on a machine where the
+ * working `.cmd` is sitting right next to it.
+ *
+ * Deleting it needs no privileges and works on a Group-Policy-locked machine.
+ * The alternatives were rejected: overwriting it with a passthrough leaves a
+ * `.ps1`, which the policy still blocks, and Authenticode signing needs a
+ * certificate and a release pipeline that does not exist (and `AllSigned` still
+ * prompts on first run).
+ *
+ * This has to run after EVERY npm install, not once: cmd-shim removes and
+ * rewrites all three shims on every update, so the file comes back each time.
+ *
+ * Best-effort by contract. A shim we cannot delete is not a reason to fail an
+ * update that otherwise worked.
+ */
+export function removeNpmPowerShellShim(deps: {
+  platform?: string;
+  binDir?: string;
+} = {}): boolean {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "win32") return false;
+
+  // npm's own global bin directory, resolved through the shim npm itself
+  // installed rather than guessed from a path template.
+  let binDir = deps.binDir;
+  if (!binDir) {
+    const resolved = resolveCliBin("hivemind", "");
+    if (!resolved) return false;
+    binDir = dirname(resolved);
+  }
+
+  const ps1 = join(binDir, "hivemind.ps1");
+  const cmd = join(binDir, "hivemind.cmd");
+  if (!existsSync(ps1)) return false;
+  // Without the .cmd, deleting the .ps1 would remove the only way to run it.
+  if (!existsSync(cmd)) return false;
+
+  // POSITIVE identification of npm's generated wrapper for OUR package.
+  //
+  // The previous test accepted any file containing "$basedir" and the word
+  // "hivemind", and this function DELETES what it matches. A user's own
+  // hivemind.ps1 that sets `$basedir = $PSScriptRoot` and calls hivemind.cmd
+  // satisfies both, so `hivemind update` would delete their script and whatever
+  // configuration it carried. A loose test in a delete path costs somebody a
+  // file; the strictness has to be in proportion to the consequence.
+  //
+  // cmd-shim emits both markers below verbatim: the $basedir preamble it
+  // generates, and an invocation naming this package's own path under
+  // node_modules. A hand-written helper matches neither.
+  let content = "";
+  try {
+    content = readFileSync(ps1, "utf-8");
+  } catch {
+    return false;
+  }
+  const CMD_SHIM_PREAMBLE = "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent";
+  if (!content.includes(CMD_SHIM_PREAMBLE)) return false;
+  if (!content.includes("node_modules/@deeplake/hivemind") &&
+      !content.includes("node_modules\\@deeplake\\hivemind")) return false;
+
+  try {
+    unlinkSync(ps1);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Non-blocking O_EXCL pidfile lock around `npm install -g @deeplake/hivemind`.
@@ -256,6 +347,24 @@ function releaseLock(fd: number, path: string): void {
  *   1 — couldn't reach npm OR upgrade failed OR install kind unsupported
  */
 export async function runUpdate(opts: UpdateOptions = {}): Promise<number> {
+  // Repair the PowerShell shim on EVERY invocation, before anything can return
+  // early. This is not part of upgrading — it is repairing local state npm broke,
+  // and the two must not be coupled: a Windows user already on the latest version
+  // takes the "up to date" path below, and if the removal lived only after the
+  // npm install they would keep a `hivemind.ps1` the execution policy blocks,
+  // forever, with no version bump ever coming to fix it. CI caught exactly that.
+  //
+  // Cheap and idempotent: it returns immediately off Windows and when there is no
+  // shim to remove. SessionStart dispatches `hivemind update` detached, so this
+  // is also what repairs the shim routinely rather than only at upgrade time.
+  const removeShim = opts.removeShim ?? removeNpmPowerShellShim;
+  // NOT under --dry-run. A preview that mutates the machine is worse than the
+  // bug the repair was added for: `hivemind update --dry-run` deleted a file
+  // while telling the user it was only describing what it would do. The repair
+  // is still unconditional on every real invocation, which is what keeps a user
+  // already on the latest version from staying broken.
+  if (!opts.dryRun) removeShim();
+
   const current = opts.currentVersionOverride ?? getVersion();
   const latest = opts.latestVersionOverride !== undefined
     ? opts.latestVersionOverride
@@ -302,6 +411,10 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<number> {
           // new (potentially malicious) publish lands between the version
           // check and the install.
           spawn("npm", ["install", "-g", `${PKG_NAME}@${latest}`]);
+          // Again after the install: cmd-shim removes and rewrites all three
+          // shims on every install, so the .ps1 the execution policy blocks is
+          // back. The call at the top of runUpdate cannot cover this one.
+          removeShim();
         } catch (e: any) {
           warn(`npm install failed: ${e.message}`);
           warn(`Try running it manually: npm install -g ${PKG_NAME}@${latest}`);

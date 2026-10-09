@@ -11,9 +11,10 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { loadCredentials, healDriftedOrgToken } from "../../commands/auth.js";
+import { loadCredentials, healDriftedOrgToken, resolveWorkspaceOverride } from "../../commands/auth.js";
+import { localSessionCredentials } from "../../storage/local-mode.js";
 import { loadConfig } from "../../config.js";
-import { resolveDirConfig } from "../../dir-config.js";
+import { resolveDirConfig, isHivemindEnabled } from "../../dir-config.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
 import { renderContextBlock } from "../shared/context-renderer.js";
 import { createPlaceholderSummary } from "../shared/placeholder-summary.js";
@@ -48,7 +49,7 @@ Organization management — each argument is SEPARATE (do NOT quote subcommands 
 - hivemind org list                           — list organizations
 - hivemind org switch <name-or-id>            — switch organization
 - hivemind workspaces                         — list workspaces
-- hivemind workspace <id>                     — switch workspace
+- hivemind workspace switch <name-or-id>      — switch workspace
 - hivemind invite <email> <ADMIN|WRITE|READ>  — invite member (ALWAYS ask user which role before inviting)
 - hivemind members                            — list members
 - hivemind remove <user-id>                   — remove member
@@ -90,17 +91,13 @@ async function createPlaceholder(
 async function main(): Promise<void> {
   if (process.env.HIVEMIND_WIKI_WORKER === "1") return;
   const input = await readStdin<HermesSessionStartInput>();
-  const sessionId = input.session_id ?? `hermes-${Date.now()}`;
   const cwd = input.cwd ?? process.cwd();
+  if (!isHivemindEnabled(cwd)) return; // .hivemind "collect": false → fully inactive
+  const sessionId = input.session_id ?? `hermes-${Date.now()}`;
 
-  let creds = loadCredentials();
+  let creds = localSessionCredentials() ?? loadCredentials();
+  let workspaceWarning = "";
   const captureEnabled = process.env.HIVEMIND_CAPTURE !== "false";
-
-  // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
-  // reused for the placeholder write and the disclosure banner below.
-  const baseConfig = loadConfig();
-  const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
-  const collectHere = captureEnabled && (dirRes?.collect ?? true);
 
   if (!creds?.token) {
     // Auto-trigger mine-local on first SessionStart for unauthenticated
@@ -110,7 +107,18 @@ async function main(): Promise<void> {
     maybeAutoMineLocal();
   } else {
     creds = await healDriftedOrgToken(creds, log);
+    // Must run before loadConfig() below so the learned alias is on disk.
+    const wsOverride = await resolveWorkspaceOverride(creds, log, cwd);
+    creds = wsOverride.creds;
+    workspaceWarning = wsOverride.warning ? `\n${wsOverride.warning}` : "";
   }
+
+  // Per-directory `.hivemind`: route / opt out for this tree. Resolved once and
+  // reused for the placeholder write and the disclosure banner below. After
+  // the heal + override steps so loadConfig() sees the repaired credentials.
+  const baseConfig = loadConfig();
+  const dirRes = baseConfig ? resolveDirConfig(baseConfig, cwd) : null;
+  const collectHere = captureEnabled;
 
   // Centralized autoupdate fires BEFORE the DB ensure-table calls — those
   // can stall for tens of seconds against a slow/unreachable backend, and
@@ -139,9 +147,7 @@ async function main(): Promise<void> {
           await createPlaceholder(api, config.tableName, sessionId, cwd, config.userName, config.orgName, config.workspaceId, pluginVersion);
           log("placeholder created");
         } else {
-          log(dirRes && !dirRes.collect
-            ? `placeholder + schema ensure skipped (.hivemind collect:false ${dirRes.found?.path})`
-            : "placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
+          log("placeholder + schema ensure skipped (HIVEMIND_CAPTURE=false)");
         }
         // Read-only renderer. Hermes's context field is invisible to
         // the user (model-only). Renderer absorbs its own errors.
@@ -189,15 +195,13 @@ async function main(): Promise<void> {
 
   // Disclose the EFFECTIVE identity (after any `.hivemind` overlay).
   const effConfig = dirRes?.config ?? baseConfig;
-  const routed = !!(dirRes?.found && dirRes.collect && baseConfig &&
+  const routed = !!(dirRes?.found && baseConfig &&
     (dirRes.config.orgId !== baseConfig.orgId || dirRes.config.workspaceId !== baseConfig.workspaceId));
   const effOrg = effConfig ? (effConfig.orgName ?? effConfig.orgId) : (creds?.orgName ?? creds?.orgId);
   const effWs = effConfig ? effConfig.workspaceId : (creds?.workspaceId ?? "default");
-  const identityLine = dirRes && !dirRes.collect
-    ? `Deeplake capture is disabled for this directory (${dirRes.found?.path}); memory search still uses org: ${effOrg}`
-    : `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
+  const identityLine = `Logged in to Deeplake as org: ${effOrg} (workspace: ${effWs})${routed ? ` · routed by ${dirRes?.found?.path}` : ""}`;
   const baseContext = creds?.token
-    ? `${context}\n${identityLine}${versionNotice}`
+    ? `${context}\n${identityLine}${workspaceWarning}${versionNotice}`
     : `${context}\nNot logged in to Deeplake. Run: hivemind login${localMinedNote}${versionNotice}`;
   // Hermes' pre-tool-use intercepts only `terminal` — it cannot
   // route Write/Edit. Use the CLI variant: agent invokes

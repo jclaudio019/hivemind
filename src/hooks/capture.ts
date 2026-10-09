@@ -12,6 +12,7 @@ import { type Config } from "../config.js";
 import { resolveCaptureConfig } from "./shared/dir-gate.js";
 import { redactSecrets } from "./shared/redact.js";
 import { DeeplakeApi } from "../deeplake-api.js";
+import { isMissingTableError } from "../deeplake-schema.js";
 import { projectNameFromCwd } from "../utils/project-name.js";
 import { log as _log } from "../utils/debug.js";
 import { buildSessionPath } from "../utils/session-path.js";
@@ -214,7 +215,7 @@ async function main(): Promise<void> {
   } catch (e: any) {
     // Fallback: table might not exist (session-start failed or org switched mid-session).
     // Create it and retry once.
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
+    if (e.message?.includes("permission denied") || e.message?.includes("does not exist") || isMissingTableError(e.message)) {
       log("table missing, creating and retrying");
       await api.ensureSessionsTable(sessionsTable);
       await api.query(insertSql);
@@ -231,15 +232,6 @@ async function main(): Promise<void> {
   // every periodic / session-end summary trigger. Best-effort; DB stays the
   // source of truth. Only reached after a successful INSERT above.
   appendSessionEvent(input.session_id, line);
-
-  // Commit-driven KPI auto-extract is disabled for now — the
-  // fire-and-forget sub-agent spawned per `git commit` (see
-  // src/hooks/commit-kpi-extract.ts) consumed a high amount of tokens
-  // on the user's claude/codex plan (every commit triggered a full
-  // goal/KPI scan + reasoning pass over the diff). The module is
-  // kept on disk for future re-wiring once we add: sha-dedup,
-  // empty-goals prefilter, debounce, and a hard timeout. Re-enable
-  // by restoring the import + try block here.
 
   maybeTriggerPeriodicSummary(input.session_id, input.cwd ?? "", config);
 

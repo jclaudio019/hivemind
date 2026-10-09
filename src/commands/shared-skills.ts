@@ -1,6 +1,22 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, dirname } from "node:path";
+import { syncDir } from "../cli/util.js";
+
+function validateSkillName(name: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) throw new Error(`Invalid skill name: ${JSON.stringify(name)}`);
+}
+
+function validateDestination(sharedDir: string): void {
+  try {
+    if (lstatSync(sharedDir).isSymbolicLink()) throw new Error(`Refusing symlink skill destination: ${sharedDir}`);
+  } catch (error: any) { if (error.code !== "ENOENT") throw error; }
+}
+
+function publishDirectory(sourceFile: string, sharedDir: string): void {
+  validateDestination(sharedDir);
+  syncDir(dirname(sourceFile), sharedDir);
+}
 
 export const SHARED_SKILLS_ROOT = join(homedir(), ".local-hivemind", "skills");
 
@@ -44,6 +60,7 @@ export interface SharedSkillsSyncResult {
 
 /** Publish one learned skill to the local cross-agent skill directory. */
 export function syncSharedSkill(source: SkillSource): SharedSkillsSyncResult {
+  validateSkillName(source.name);
   const agentRoots = [
     join(homedir(), ".codex", "skills"),
     join(homedir(), ".cursor", "skills"),
@@ -51,8 +68,7 @@ export function syncSharedSkill(source: SkillSource): SharedSkillsSyncResult {
     join(homedir(), ".prime", "agent", "skills"),
   ];
   const sharedDir = join(SHARED_SKILLS_ROOT, source.name);
-  mkdirSync(sharedDir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(sharedDir, "SKILL.md"), readFileSync(source.path));
+  publishDirectory(source.path, sharedDir);
   let linked = 0;
   let skipped = 0;
   for (const root of agentRoots) {
@@ -83,12 +99,13 @@ export function syncSharedSkills(): SharedSkillsSyncResult {
       const suffix = relative(hermesRoot, source.path).replaceAll("/", "--").replace(/--SKILL\.md$/, "");
       name = `${name}--${suffix}`;
     }
+    validateSkillName(name);
     names.add(name);
     const sharedDir = join(SHARED_SKILLS_ROOT, name);
+    validateDestination(sharedDir);
     const sharedFile = join(sharedDir, "SKILL.md");
     if (!existsSync(sharedFile)) {
-      mkdirSync(sharedDir, { recursive: true });
-      writeFileSync(sharedFile, readFileSync(source.path));
+      publishDirectory(source.path, sharedDir);
       imported++;
     }
     for (const root of agentRoots) {

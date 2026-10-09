@@ -42,7 +42,7 @@ On [LoCoMo](https://arxiv.org/abs/2402.17753), the public long-context memory be
 
 - 📥 **Captures** every session's prompts, tool calls, and responses as structured traces in Deeplake
 - 🧠 **Codifies** patterns into reusable `SKILL.md` files, available to every agent on your team
-- 🔍 **Searches** traces and skills with hybrid lexical + semantic retrieval (BM25 fallback when embeddings off)
+- 🔍 **Searches** traces and skills with hybrid lexical + semantic retrieval (ILIKE lexical fallback when embeddings off)
 - 🔗 **Propagates** capability across sessions, agents, teammates, and machines in real time
 - 📁 **Intercepts** file operations on `~/.deeplake/memory/` through a virtual filesystem backed by SQL
 - 📝 **Summarizes** sessions into AI-generated wiki pages via a background worker at session end
@@ -231,7 +231,7 @@ Auto-capture is enabled the same way as Claude Code / Codex / OpenClaw.
 <details>
   <summary><b>Hermes Agent</b></summary>
 
-Wires shell hooks into `~/.hermes/config.yaml` (`pre_llm_call` / `post_tool_call` / `post_llm_call` / `on_session_end`) for auto-capture, drops the bundle at `~/.hermes/hivemind/bundle/`, registers the shared MCP server (`~/.hivemind/mcp/server.js`) under `mcp_servers.hivemind`, and installs an `agentskills.io`-compatible skill at `~/.hermes/skills/hivemind-memory/` for recall.
+Wires shell hooks into `~/.hermes/config.yaml` (`pre_llm_call` / `post_tool_call` / `post_llm_call` / `on_session_end`) for auto-capture, drops the bundle at `~/.hermes/hivemind/bundle/`, registers the shared MCP server (`~/.hivemind/mcp/server.js`) under `mcp_servers.hivemind`, and installs `agentskills.io`-compatible skills at `~/.hermes/skills/hivemind-memory/` (recall), `hivemind-goals/` and `hivemind-graph/`. Re-running install (or `hivemind update`) syncs these directories: files a previous version wrote that the current one no longer ships are removed; anything else under `~/.hermes/skills/` is left untouched.
 
 ```bash
 hivemind hermes install
@@ -298,7 +298,7 @@ Disable capture entirely:
 HIVEMIND_CAPTURE=false claude
 ```
 
-Disable capture for a specific directory tree (persistent, travels with the repo) by dropping a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
+Turn Hivemind off for a specific directory tree (persistent, travels with the repo) by dropping a `.hivemind` file with `{ "collect": false }`. See [Per-directory config](#per-directory-config-hivemind).
 
 Enable debug logging:
 
@@ -327,7 +327,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 |---------------------------|---------------------------|--------------------------------------------|
 | `HIVEMIND_TOKEN`          | _(none)_                  | API token (auto-set by login)              |
 | `HIVEMIND_ORG_ID`         | _(none)_                  | Organization ID (auto-set by login)        |
-| `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name                             |
+| `HIVEMIND_WORKSPACE_ID`   | `default`                 | Workspace name or id (`hivemind workspaces`) |
 | `HIVEMIND_API_URL`        | `https://api.deeplake.ai` | API endpoint                               |
 | `HIVEMIND_TABLE`          | `memory`                  | SQL table for summaries and virtual FS     |
 | `HIVEMIND_SESSIONS_TABLE` | `sessions`                | SQL table for per-event session capture    |
@@ -339,10 +339,7 @@ This plugin captures session activity and stores it in your Deeplake workspace:
 | `HIVEMIND_SUMMARY_EVERY_HOURS` | `2`                  | Time-based summary cadence, used when at least one new event has arrived since the last summary. |
 | `HIVEMIND_WIKI_WORKER`    | _(none)_                  | Set to `1` to disable the background session-summary worker entirely (no `claude -p` summary runs). Also set automatically inside the worker as a recursion guard. Capture and recall keep working. |
 | `HIVEMIND_GRAPH_ON_STOP`  | _(none)_                  | Set to `0` to disable the code-graph rebuild that runs on `Stop` / `SessionEnd`. |
-| `HIVEMIND_EMBEDDINGS`     | `true`                    | Set to `false` to force lexical-only mode  |
-| `HIVEMIND_PROACTIVE_RECALL_DISABLED` | _(none)_       | Set to `1` to disable **proactive recall** (auto-searching team memory on each recall-worthy prompt and injecting a relevant snippet into the agent's context). On by default. Does **not** affect capture or the agent's own grep/skill recall. Alt form: `HIVEMIND_PROACTIVE_RECALL=0`. |
-| `HIVEMIND_RECALL_MIN_OVERLAP` | `2`                   | Proactive recall (lexical mode): min distinct prompt keywords a summary must share to be injected. Higher = stricter. |
-| `HIVEMIND_RECALL_TIMEOUT_MS` | `1000`                 | Proactive recall: hard cap on the synchronous search path; on timeout it skips rather than delay the turn. |
+| `HIVEMIND_EMBEDDINGS`     | _(none)_                  | Read once, when `~/.deeplake/config.json` has no `embeddings.enabled` yet: unset or `false` seeds it off, any other value (`true`, `1`, ...) seeds it on. Afterwards only `hivemind embeddings install`/`enable` (persist on) and `disable`/`uninstall` (persist off) change it. |
 | `HIVEMIND_DEBUG`          | _(none)_                  | Set to `1` for verbose hook debug logs     |
 
 ## Per-directory config (`.hivemind`)
@@ -365,26 +362,30 @@ Drop a `.hivemind` JSON file at the root of the tree you want to configure:
 |---------------|-------------------------------------------------------------------------------|
 | `orgId`       | Route this tree to this org — captured traces **and** memory reads.           |
 | `workspaceId` | Route to this workspace.                                                       |
-| `collect`     | `false` → **never** capture traces from this tree. Reads still route.          |
+| `collect`     | `false` → Hivemind is **completely inactive** in this tree: no capture, context, memory reads or notifications. |
 
 Any field may be omitted; omitted fields fall back to your global identity.
 
-`orgId` / `workspaceId` are **identity** (they apply to reads and writes alike); `collect` is a **capture switch** (writes only). The two are independent, which is what makes the read-only recipe below work.
+`orgId` / `workspaceId` are **identity** (they apply to reads and writes alike); `collect: false` switches Hivemind **off** for the tree.
 
-**Three common recipes:**
+**Common recipes:**
 
 ```jsonc
 // route this repo to a client org/workspace — reads and writes both land there
 { "orgId": "acme-corp", "workspaceId": "client-work" }
 
-// never collect traces from this folder (e.g. a personal or sensitive repo)
+// Hivemind fully off in this folder (e.g. a personal or sensitive repo)
 { "collect": false }
-
-// read a shared workspace's memory, but never write to it
-{ "workspaceId": "client-work", "collect": false }
 ```
 
 Routing never carries a token — auth stays in `~/.deeplake/credentials.json`, so a `.hivemind` only ever takes effect against orgs your existing login already authorizes. An `HIVEMIND_ORG_ID` / `HIVEMIND_WORKSPACE_ID` set in your environment **wins over** a `.hivemind` for that field; `hivemind whoami` discloses which one is in effect.
+
+**Run Hivemind only in chosen repos.** Turn it off for a whole tree and back on per repo (nearest file wins):
+
+```bash
+echo '{ "collect": false }' > ~/.hivemind.local                 # or at the root of your source tree
+echo '{ "collect": true }'  > ~/src/my-repo/.hivemind.local     # repeat per repo
+```
 
 ### Committed vs local
 
@@ -429,27 +430,15 @@ Because a `.hivemind` travels with a repo, cloning someone's repo could in princ
 |------------------------------|------------------------------------------------------------|
 | Dir with a routing `.hivemind` | The pinned org/workspace, **unaffected** by `org switch`. |
 | Dir with **no** `.hivemind`  | Follows your current global default (i.e. `org switch`).   |
-| Dir with `collect: false`    | Nothing captured, regardless of the global default.        |
+| Dir with `collect: false`    | Hivemind inactive, regardless of the global default.       |
 
 So `org switch` moves everything that *isn't* explicitly pinned; a pin stays put by design (that's the point of routing a client repo to a fixed org). The session-start banner always shows the **effective** identity for your current directory, so a pinned tree never silently surprises you.
 
 ## Semantic search (optional)
 
-Hivemind ships with a local embedding daemon (nomic-embed-text-v1.5) for hybrid semantic + lexical search over `~/.deeplake/memory/`. **Off by default** because the dependency footprint is ~600 MB. Enable with `hivemind embeddings install` (or `hivemind install --with-embeddings`). Without it, search degrades silently to BM25/lexical-only.
+Hivemind ships with a local embedding daemon (nomic-embed-text-v1.5) for hybrid semantic + lexical search over `~/.deeplake/memory/`. **Off by default** because the dependency footprint is ~600 MB. Enable with `hivemind embeddings install` (or `hivemind install --with-embeddings`). Without it, search degrades silently to ILIKE lexical-only.
 
 Full guide: **[docs/EMBEDDINGS.md](docs/EMBEDDINGS.md)**.
-
-## Proactive recall
-
-On a recall-worthy prompt (errors, "how did we…", substantive requests — acks and short follow-ups are skipped), Hivemind automatically searches the team's summaries and, if the top hit clears a relevance bar, injects one attributed snippet (`recalled from <teammate> · <date>`) into the agent's context — so prior work shows up *unprompted*, not only when the agent decides to search. Semantic when embeddings are installed, otherwise lexical (ILIKE keyword overlap), so it works without the embedding model. The search is latency-bounded and skips silently on any miss or error.
-
-**On by default.** To turn it off (capture and the agent's own grep/skill recall are unaffected):
-
-```bash
-HIVEMIND_PROACTIVE_RECALL_DISABLED=1 claude   # or HIVEMIND_PROACTIVE_RECALL=0
-```
-
-Tune precision/latency with `HIVEMIND_RECALL_MIN_OVERLAP` and `HIVEMIND_RECALL_TIMEOUT_MS` (see the table above). Every recall-worthy invocation is recorded to `~/.deeplake/recall-events.jsonl` for usage/hit-rate analysis.
 
 ## Summaries
 
@@ -495,7 +484,7 @@ Generation shells out to a host agent's own CLI (`claude -p`, `codex exec`, …)
 
 ## Rules (cross-agent team principles)
 
-Hivemind **shares team rules across every agent in the org**, injected at SessionStart so every claude-code / cursor / hermes session starts knowing them. For personal or team work items with progress tracking, use [Goals + KPIs](#goals--kpis) (VFS-backed) instead.
+Hivemind **shares team rules across every agent in the org**, injected at SessionStart so every claude-code / cursor / hermes session starts knowing them. For personal or team work items with progress tracking, use [Goals](#goals) (VFS-backed) instead.
 
 ```bash
 hivemind rules add "no DROP TABLE on prod creds"
@@ -525,9 +514,9 @@ fall back to `hivemind context`):
 - `HIVEMIND_RULES_TABLE`: table name (default `hivemind_rules`).
 - `HIVEMIND_CAPTURE=false`: full read-only mode. Skips placeholder + ensure DDL; renderer still injects.
 
-## Goals + KPIs
+## Goals
 
-Personal / team objectives + measurable targets live in the Deeplake virtual filesystem under `~/.deeplake/memory/goal/<owner>/<status>/<uuid>.md` and `~/.deeplake/memory/kpi/<goal_id>/<kpi-slug>.md`. Path encodes structure (owner, status, goal_id); the file body holds the human-readable description.
+Personal / team objectives live in the Deeplake virtual filesystem under `~/.deeplake/memory/goal/<owner>/<status>/<uuid>.md`. Path encodes structure (owner, status, goal_id); the file body holds the human-readable description.
 
 ```bash
 # CLI fallback for runtimes that can't route VFS writes (cursor/hermes/pi)
@@ -537,7 +526,7 @@ hivemind goal done <goal_id>
 hivemind goal progress <goal_id> opened|in_progress|closed
 ```
 
-For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates and edits goals/KPIs directly via Bash heredoc against the VFS path. `mv` between `opened/`, `in_progress/`, and `closed/` is the canonical status transition. KPIs are manual files; the body format is documented in the skill (`target:`, `current:`, `unit:`).
+For VFS-capable runtimes (claude-code/codex) the `hivemind-goals` skill creates and edits goals directly via Bash heredoc against the VFS path. `mv` between `opened/`, `in_progress/`, and `closed/` is the canonical status transition.
 
 ## Architecture
 

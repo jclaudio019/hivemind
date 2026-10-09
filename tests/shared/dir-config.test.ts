@@ -7,6 +7,7 @@ import {
   findDirConfig,
   parseDirConfig,
   resolveDirConfig,
+  isHivemindEnabled,
 } from "../../src/dir-config.js";
 
 let root: string;
@@ -24,7 +25,6 @@ function base(): Config {
     skillsTableName: "skills",
     rulesTableName: "hivemind_rules",
     goalsTableName: "hivemind_goals",
-    kpisTableName: "hivemind_kpis",
     codebaseTableName: "codebase",
     docsTableName: "docs",
     memoryPath: "/tmp/mem",
@@ -171,6 +171,32 @@ describe("resolveDirConfig — env precedence (env > .hivemind)", () => {
     expect(res.config.workspaceId).toBe("env-ws"); // .hivemind workspace ignored
   });
 
+  it("a .hivemind workspace NAME resolves through the alias map of the routed org", () => {
+    write(dir("proj"), ".hivemind", { orgId: "acme", workspaceId: "Client Work" });
+    const withAliases = { ...base(), workspaceAliases: { acme: { "client work": "client-work" }, "global-org": { "client work": "wrong" } } };
+    const res = resolveDirConfig(withAliases, dir("proj"), {});
+    expect(res.config.workspaceId).toBe("client-work");
+  });
+
+  it("env workspace NAME + .hivemind org route → resolved against the ROUTED org, not the login org", () => {
+    write(dir("proj"), ".hivemind", { orgId: "routed", workspaceId: "ignored" });
+    // loadConfig() already mapped the env name through the login org's aliases.
+    const pinned = {
+      ...base(), workspaceId: "login-id",
+      workspaceAliases: { "global-org": { team: "login-id" }, routed: { team: "routed-id" } },
+    };
+    const res = resolveDirConfig(pinned, dir("proj"), { HIVEMIND_WORKSPACE_ID: "team" });
+    expect(res.config.orgId).toBe("routed");
+    expect(res.config.workspaceId).toBe("routed-id");
+  });
+
+  it("env workspace lock with no alias for the routed org passes the raw env value through", () => {
+    write(dir("proj"), ".hivemind", { orgId: "routed" });
+    const pinned = { ...base(), workspaceId: "login-id", workspaceAliases: { "global-org": { team: "login-id" } } };
+    const res = resolveDirConfig(pinned, dir("proj"), { HIVEMIND_WORKSPACE_ID: "team" });
+    expect(res.config.workspaceId).toBe("team");
+  });
+
   it("both env vars set → .hivemind routing is fully ignored", () => {
     write(dir("proj"), ".hivemind", { orgId: "acme", workspaceId: "client-work" });
     const pinned = { ...base(), orgId: "env-org", orgName: "env-org", workspaceId: "env-ws" };
@@ -186,5 +212,24 @@ describe("resolveDirConfig — env precedence (env > .hivemind)", () => {
     write(dir("proj"), ".hivemind", { collect: false });
     const res = resolveDirConfig(base(), dir("proj"), { HIVEMIND_ORG_ID: "env-org" });
     expect(res.collect).toBe(false);
+  });
+});
+
+describe("isHivemindEnabled (collect:false = fully inactive)", () => {
+  it("collect:false at a source root turns Hivemind off for every repo below it", () => {
+    write(dir("src"), ".hivemind", { collect: false });
+    expect(isHivemindEnabled(dir("src", "unrelated", "pkg"))).toBe(false);
+  });
+
+  it("a nearer collect:true opts a repo back in", () => {
+    write(dir("src"), ".hivemind", { collect: false });
+    write(dir("src", "deeplake"), ".hivemind.local", { collect: true });
+    expect(isHivemindEnabled(dir("src", "deeplake", "pkg"))).toBe(true);
+  });
+
+  it("enabled with no file or a routing-only file (unchanged behavior)", () => {
+    expect(isHivemindEnabled(dir("plain"))).toBe(true);
+    write(dir("team"), ".hivemind", { workspaceId: "w" });
+    expect(isHivemindEnabled(dir("team"))).toBe(true);
   });
 });

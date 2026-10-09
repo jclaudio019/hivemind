@@ -51,13 +51,15 @@ export class LocalBackend {
   }
 
   private runSearchUnion(sql: string): Record<string, unknown>[] | null {
+    const { normalized, literals } = maskSqlLiterals(sql);
+    sql = normalized;
     const from = sql.indexOf(" FROM (");
     const end = sql.lastIndexOf(") AS combined");
     if (from < 0 || end < from || !/^\s*SELECT\s+path,\s+content,/i.test(sql)) return null;
     const inner = sql.slice(from + 7, end);
     const parts = inner.split(/\)\s+UNION\s+ALL\s+\(/i).map(part => part.replace(/^\s*\(/, "").replace(/\)\s*$/, ""));
     if (parts.length < 2 || parts.some(part => !/^\s*SELECT\b/i.test(part))) return null;
-    const rows = parts.flatMap(part => this.db.prepare(normalizeSql(part)).all() as Record<string, unknown>[]);
+    const rows = parts.flatMap(part => this.db.prepare(normalizeSql(restoreSqlLiterals(part, literals))).all() as Record<string, unknown>[]);
     const order = sql.match(/ORDER BY\s+(.+?)(?:\s+LIMIT\s+(\d+))?\s*$/i);
     if (order) {
       const keys = order[1].split(",").map(key => key.trim().split(/\s+/));
@@ -89,33 +91,31 @@ function sessionTypeSql(path: string): string {
   return `(CASE WHEN json_type(${json}, '${path}') = 'text' THEN json_extract(${json}, '${path}') END)`;
 }
 
+function maskSqlLiterals(sql: string): { normalized: string; literals: string[] } {
+  // Protect transcript text from both structural parsing and dialect rewrites.
+  const literals: string[] = [];
+  const normalized = sql.replace(/(?:\b[Ee])?'(?:''|[^'])*'/g, literal => {
+    literals.push(/^[Ee]'/.test(literal) ? literal.slice(1) : literal);
+    return `\0${literals.length - 1}\0`;
+  });
+  return { normalized, literals };
+}
+
+function restoreSqlLiterals(sql: string, literals: string[]): string {
+  return sql.replace(/\0(\d+)\0/g, (_match, index) => literals[Number(index)]);
+}
+
 function normalizeSql(sql: string): string {
-  let normalized = "";
-  let inString = false;
-  for (let i = 0; i < sql.length; i++) {
-    const char = sql[i];
-    if (char === "'") {
-      if (inString && sql[i + 1] === "'") {
-        normalized += "''";
-        i++;
-        continue;
-      }
-      inString = !inString;
-    }
-    if (!inString && (char === "E" || char === "e") && sql[i + 1] === "'") {
-      normalized += "'";
-      i++;
-    } else {
-      normalized += char;
-    }
-  }
-  return normalized
+  const { normalized, literals } = maskSqlLiterals(sql);
+  const rewritten = normalized
     // PostgreSQL escape-string literals are ordinary SQLite string literals for
     // our already-escaped payloads. Backslash decoding is deliberately omitted.
     .replace(/\s+USING\s+deeplake_index\s*(?=\()/gi, "")
     .replace(/\s+USING\s+deeplake\s*;?\s*$/i, "")
-    .replace(/message\s*->\s*'raw'\s*->\s*'payload'\s*->>\s*'type'/gi, sessionTypeSql("$.raw.payload.type"))
-    .replace(/message\s*->>\s*'type'/gi, sessionTypeSql("$.type"))
+    .replace(/message\s*->\s*\0(\d+)\0\s*->\s*\0(\d+)\0\s*->>\s*\0(\d+)\0/gi,
+      (match, raw, payload, type) => literals[Number(raw)] === "'raw'" && literals[Number(payload)] === "'payload'" && literals[Number(type)] === "'type'" ? sessionTypeSql("$.raw.payload.type") : match)
+    .replace(/message\s*->>\s*\0(\d+)\0/gi,
+      (match, type) => literals[Number(type)] === "'type'" ? sessionTypeSql("$.type") : match)
     .replace(/::text\b/gi, "")
     .replace(/::jsonb\b/gi, "")
     .replace(/\bILIKE\b/gi, "LIKE")
@@ -129,6 +129,7 @@ function normalizeSql(sql: string): string {
     .replace(/\((\s*SELECT\b[\s\S]*?)\)(\s+UNION(?:\s+ALL)?\s+)\((\s*SELECT\b[\s\S]*?)\)/gi, "$1$2$3")
     .replace(/\bJSONB\b/gi, "TEXT")
     .replace(/\bFLOAT4\[\]/gi, "TEXT");
+  return restoreSqlLiterals(rewritten, literals);
 }
 function cosine(left: unknown, right: unknown): number {
   try {

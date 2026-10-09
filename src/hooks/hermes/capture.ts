@@ -18,6 +18,7 @@ import { readStdin } from "../../utils/stdin.js";
 import { resolveCaptureConfig } from "../shared/dir-gate.js";
 import { redactSecrets } from "../shared/redact.js";
 import { DeeplakeApi } from "../../deeplake-api.js";
+import { isMissingTableError } from "../../deeplake-schema.js";
 import { projectNameFromCwd } from "../../utils/project-name.js";
 import { log as _log } from "../../utils/debug.js";
 import { buildSessionPath } from "../../utils/session-path.js";
@@ -234,7 +235,7 @@ async function main(): Promise<void> {
   try {
     await api.query(insertSql);
   } catch (e: any) {
-    if (e.message?.includes("permission denied") || e.message?.includes("does not exist")) {
+    if (e.message?.includes("permission denied") || e.message?.includes("does not exist") || isMissingTableError(e.message)) {
       log("table missing, creating and retrying");
       await api.ensureSessionsTable(sessionsTable);
       await api.query(insertSql);

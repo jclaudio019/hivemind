@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, userInfo } from "node:os";
 import { isLocalMode, LOCAL_ROOT } from "./storage/local-mode.js";
+import { resolveWorkspaceRef } from "./commands/auth-creds.js";
 
 export interface Config {
   token: string;
@@ -15,10 +16,12 @@ export interface Config {
   skillsTableName: string;
   rulesTableName: string;
   goalsTableName: string;
-  kpisTableName: string;
   docsTableName: string;
   codebaseTableName: string;
   memoryPath: string;
+  // Learned workspace name → id map (see Credentials.workspaceAliases).
+  // Optional so hand-built Config fixtures in tests keep compiling.
+  workspaceAliases?: Record<string, Record<string, string>>;
 }
 
 interface Credentials {
@@ -28,6 +31,7 @@ interface Credentials {
   userName?: string;
   workspaceId?: string;
   apiUrl?: string;
+  workspaceAliases?: Record<string, Record<string, string>>;
 }
 
 export function loadConfig(): Config | null {
@@ -55,7 +59,13 @@ export function loadConfig(): Config | null {
     orgId,
     orgName: local ? "local" : creds?.orgName ?? orgId,
     userName: process.env.HIVEMIND_USER_NAME || creds?.userName || userInfo().username || "unknown",
-    workspaceId: process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    // The API only accepts workspace IDS in its URLs, but the env var is
+    // documented (and typed by users) as a name. Map through the aliases
+    // SessionStart learned so a name never reaches the wire.
+    workspaceId: resolveWorkspaceRef(
+      creds?.workspaceAliases, orgId,
+      process.env.HIVEMIND_WORKSPACE_ID ?? creds?.workspaceId ?? "default",
+    ),
     apiUrl: local ? "local" : process.env.HIVEMIND_API_URL ?? creds?.apiUrl ?? "https://api.deeplake.ai",
     tableName: process.env.HIVEMIND_TABLE ?? "memory",
     sessionsTableName: process.env.HIVEMIND_SESSIONS_TABLE ?? "sessions",
@@ -65,14 +75,11 @@ export function loadConfig(): Config | null {
     // override convention (memory_test / sessions_test → goals_test, etc.)
     // documented in CLAUDE.md.
     rulesTableName: process.env.HIVEMIND_RULES_TABLE ?? "hivemind_rules",
-    // Goals + KPIs (refined design — VFS path classifier maps
+    // Goals (VFS path classifier maps
     //   memory/goal/<user>/<status>/<uuid>.md → hivemind_goals row
-    //   memory/kpi/<uuid>/<kpi_id>.md → hivemind_kpis row
     // See src/shell/deeplake-fs.ts for the translation logic and
-    // GOALS_COLUMNS / KPIS_COLUMNS in deeplake-schema.ts for the
-    // table shape.
+    // GOALS_COLUMNS in deeplake-schema.ts for the table shape).
     goalsTableName: process.env.HIVEMIND_GOALS_TABLE ?? "hivemind_goals",
-    kpisTableName: process.env.HIVEMIND_KPIS_TABLE ?? "hivemind_kpis",
     // Per-file documentation kept fresh on code deltas. INSERT-only
     // version-bumped table (see DOCS_COLUMNS in deeplake-schema.ts).
     // Phase 1: written/read through the `hivemind docs` CLI + worker via the
@@ -82,5 +89,6 @@ export function loadConfig(): Config | null {
     docsTableName: process.env.HIVEMIND_DOCS_TABLE ?? "hivemind_docs",
     codebaseTableName: process.env.HIVEMIND_CODEBASE_TABLE ?? "codebase",
     memoryPath: local ? join(LOCAL_ROOT, "memory") : process.env.HIVEMIND_MEMORY_PATH ?? join(home, ".deeplake", "memory"),
+    workspaceAliases: creds?.workspaceAliases,
   };
 }

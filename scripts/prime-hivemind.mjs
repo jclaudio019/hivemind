@@ -2,7 +2,8 @@
 process.env.HIVEMIND_BACKEND ??= "local";
 process.env.HIVEMIND_LOCAL_ROOT ??= `${process.env.HOME}/.local-hivemind`;
 /** Run Prime Agent in JSON mode and import its emitted events locally. */
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,16 +20,17 @@ child.on("close", async code => {
   const text = Buffer.concat(chunks).toString("utf8");
   const dir = mkdtempSync(join(tmpdir(), "hivemind-prime-"));
   const file = join(dir, `${randomUUID()}.jsonl`);
+  let imported = false;
   try {
-    writeFileSync(file, text);
-    const { importSessionFiles } = await import("../dist/src/commands/import-sessions.js");
-    const result = await importSessionFiles([file], "prime");
-    console.error(`prime-hivemind: imported ${result.events} event(s) locally`);
+    writeFileSync(file, text, { mode: 0o600 });
+    const receipt = execFileSync(process.execPath, [fileURLToPath(new URL("../bundle/cli.js", import.meta.url)), "import", file, "--agent", "prime"], { env: process.env, encoding: "utf8", timeout: 60_000 });
+    imported = true;
+    console.error(`prime-hivemind: ${receipt.trim()}`);
   } catch (error) {
-    console.error(`prime-hivemind: local capture failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`prime-hivemind: local capture failed: ${error instanceof Error ? error.message : String(error)}; events preserved at ${file}`);
     if (code === 0) process.exitCode = 1;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (imported) rmSync(dir, { recursive: true, force: true });
   }
   if (code !== null && code !== 0) process.exitCode = code;
 });

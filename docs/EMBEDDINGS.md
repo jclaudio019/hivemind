@@ -1,6 +1,6 @@
 # Embeddings (semantic search)
 
-Hivemind can run a local embedding daemon (nomic-embed-text-v1.5, ~130 MB) so that `Grep` over `~/.deeplake/memory/` uses hybrid semantic + lexical ranking instead of pure BM25. This is **off by default** — the daemon depends on `@huggingface/transformers`, which pulls onnxruntime-node and sharp (~600 MB total with native binaries). Shipping that with every agent install would 60× the install size for a feature most users don't need.
+Hivemind can run a local embedding daemon (nomic-embed-text-v1.5, ~130 MB) so that `Grep` over `~/.deeplake/memory/` uses hybrid semantic + lexical ranking instead of pure ILIKE lexical matching. This is **off by default** — the daemon depends on `@huggingface/transformers`, which pulls onnxruntime-node and sharp (~600 MB total with native binaries). Shipping that with every agent install would 60× the install size for a feature most users don't need.
 
 ## Install
 
@@ -32,7 +32,7 @@ Restart your agents after enabling. From the next session, captured messages and
 If `@huggingface/transformers` is **not** present, Hivemind silently degrades to lexical-only mode:
 
 - ✅ Capture continues; rows still land in Deeplake.
-- ✅ `Grep` still works via BM25 / `ILIKE` matching on text columns.
+- ✅ `Grep` still works via ILIKE (lexical substring) matching on text columns.
 - ⚪ The `message_embedding` / `summary_embedding` columns stay `NULL`.
 - ⚪ The hook log notes `embeddings: no-transformers` once at session start.
 

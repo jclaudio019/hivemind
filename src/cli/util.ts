@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, symlinkSync, unlinkSync, lstatSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, cpSync, rmSync, symlinkSync, unlinkSync, lstatSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,85 @@ export function ensureDir(path: string, mode: number = 0o755): void {
 
 export function copyDir(src: string, dst: string): void {
   cpSync(src, dst, { recursive: true, force: true, dereference: false });
+}
+
+/**
+ * Remove every entry of `dir` whose name is not in `keep`. Returns the
+ * removed paths. Only for directories hivemind owns outright (a bundle dir,
+ * a skill dir the installer itself created): symlinks are unlinked, never
+ * followed, and a `dir` that is itself a symlink is left alone.
+ */
+export function pruneDir(dir: string, keep: Iterable<string>): string[] {
+  if (isLink(dir) || !existsSync(dir)) return [];
+  const wanted = new Set(keep);
+  const removed: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (wanted.has(name)) continue;
+    const path = join(dir, name);
+    rmSync(path, { recursive: true, force: true });
+    removed.push(path);
+  }
+  return removed;
+}
+
+/**
+ * Make `dst` mirror `src`: copy everything over, then remove whatever the
+ * previous install left under `dst` that `src` no longer ships (renamed
+ * hashed chunks, dropped skills, deleted workers). Recurses into real
+ * subdirectories present on both sides. `dst` must be a directory hivemind
+ * owns — see pruneDir. Returns the removed paths.
+ */
+export function syncDir(src: string, dst: string): string[] {
+  if (isLink(dst)) {
+    warn(`  skipping ${dst}: it is a symlink, not a hivemind-owned directory`);
+    return [];
+  }
+  const removed = dropUnreplaceable(src, dst);
+  copyDir(src, dst);
+  removed.push(...pruneToSource(src, dst));
+  return removed;
+}
+
+// Clear what cpSync cannot replace in place: an entry whose kind changed
+// between versions (file <-> directory), and a symlink at a shipped name,
+// which cpSync would otherwise write through into whatever it points at.
+function dropUnreplaceable(src: string, dst: string): string[] {
+  if (!existsSync(dst) || isLink(dst)) return [];
+  const removed: string[] = [];
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    const target = join(dst, entry.name);
+    let st;
+    try { st = lstatSync(target); } catch { continue; }
+    if (st.isSymbolicLink()) {
+      unlinkSync(target);
+      removed.push(target);
+      continue;
+    }
+    if (st.isDirectory() === entry.isDirectory()) {
+      if (entry.isDirectory()) removed.push(...dropUnreplaceable(join(src, entry.name), target));
+      continue;
+    }
+    rmSync(target, { recursive: true, force: true });
+    removed.push(target);
+  }
+  return removed;
+}
+
+function pruneToSource(src: string, dst: string): string[] {
+  const shipped = readdirSync(src, { withFileTypes: true });
+  const removed = pruneDir(dst, shipped.map(e => e.name));
+  for (const entry of shipped) {
+    if (!entry.isDirectory()) continue;
+    const sub = join(dst, entry.name);
+    if (isLink(sub) || !lstatSync(sub).isDirectory()) continue;
+    removed.push(...pruneToSource(join(src, entry.name), sub));
+  }
+  return removed;
+}
+
+/** One log line per path syncDir/pruneDir removed, in the installer's column layout. */
+export function reportPruned(label: string, removed: string[]): void {
+  for (const path of removed) log(`  ${label.padEnd(15)}removed stale ${path}`);
 }
 
 export function symlinkForce(target: string, link: string): void {

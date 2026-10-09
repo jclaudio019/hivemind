@@ -33,10 +33,6 @@ describe("inner CLI spawn windowsHide — source guards", () => {
     expect(src("src/skillify/claude-model.ts")).toMatch(/spawn\(\s*findAgentBin\([^;]*windowsHide:\s*true/);
   });
 
-  it("commit-kpi-extract detached CLI spawn passes windowsHide", () => {
-    expect(src("src/hooks/commit-kpi-extract.ts")).toMatch(/spawn\(\s*cli\.bin[^)]*windowsHide:\s*true/);
-  });
-
   // The helper LOOKUPS, not the CLI spawns. These run `where.exe` on Windows
   // on the way to launching a detached worker, so without CREATE_NO_WINDOW
   // each one allocates its own visible window — the same flash the CLI spawns
@@ -107,13 +103,37 @@ describe("hook-triggered detached launch windowsHide — source guards", () => {
     ["shared skillopt worker", "src/skillify/skillopt-trigger.ts", /spawn\(process\.execPath,\s*\[entry\][^)]*windowsHide:\s*true/],
     ["standalone embedding daemon", "src/embeddings/standalone-embed-client.ts", /_spawn\(process\.execPath,\s*\[daemonEntry\][^)]*windowsHide:\s*true/],
     ["codex session-start setup", "src/hooks/codex/session-start.ts", /spawn\("node",\s*\[setupScript\][^)]*windowsHide:\s*true/],
-    ["shared autoupdate", "src/hooks/shared/autoupdate.ts", /spawn\(cmd,\s*args[^)]*windowsHide:\s*true/],
+    // autoupdate's spawn target is no longer the bare `cmd`: on Windows the
+    // resolved binary is a .cmd, which cannot be spawned without a shell since
+    // the CVE-2024-27980 fix, so the file passes shellFile(cmd) under
+    // `shell: true`. The guard follows that shape and still pins windowsHide.
+    ["shared autoupdate", "src/hooks/shared/autoupdate.ts", /spawn\(\s*needsShell \? shellFile\(cmd\) : cmd,\s*args[^)]*windowsHide:\s*true/],
   ];
   for (const [name, rel, re] of CASES) {
     it(`${name} passes windowsHide`, () => {
       expect(src(rel)).toMatch(re);
     });
   }
+
+  // The other half of the same fix: windowsHide alone was never enough on
+  // Windows, because the spawn failed before it could matter. A .cmd shim needs
+  // shell mode, and shell mode needs the path quoted (Node concatenates file and
+  // args into one unescaped string, and the default npm global bin contains a
+  // space for any account whose user name does). Losing either of these puts
+  // Windows users back on a version that can never update itself.
+  it("shared autoupdate spawns .cmd shims through a shell, with the path quoted", () => {
+    const s = src("src/hooks/shared/autoupdate.ts");
+    expect(s).toMatch(/shell:\s*needsShell/);
+    expect(s).toMatch(/const needsShell = binNeedsShell\(cmd\)/);
+    expect(s).toMatch(/shellFile\(cmd\)/);
+  });
+
+  it("cli update spawns .cmd shims through a shell, with the path quoted", () => {
+    const s = src("src/cli/update.ts");
+    expect(s).toMatch(/shell:\s*needsShell/);
+    expect(s).toMatch(/binNeedsShell\(bin\)/);
+    expect(s).toMatch(/shellFile\(bin\)/);
+  });
 
   it("openclaw's graph build and pull workers both pass windowsHide", () => {
     const oc = src("harnesses/openclaw/src/graph-lifecycle.ts");

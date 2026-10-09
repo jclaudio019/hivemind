@@ -63,7 +63,7 @@ afterEach(() => {
 describe("loadConfig — no credentials file", () => {
   it("local mode does not read cloud credentials", async () => {
     process.env.HIVEMIND_BACKEND = "local";
-    existsSyncMock.mockReturnValue(true);
+    mockCredentialsExists();
     const loadConfig = await importLoadConfig();
     expect(loadConfig()).toMatchObject({ token: "local", orgId: "local", apiUrl: "local" });
     expect(readFileSyncMock).not.toHaveBeenCalled();
@@ -209,5 +209,56 @@ describe("loadConfig — credentials file", () => {
     expect(cfg?.rulesTableName).toBe("rules_test");
     expect(cfg?.tableName).toBe("memory");             // default unchanged
     expect(cfg?.sessionsTableName).toBe("sessions");   // default unchanged
+  });
+});
+
+describe("loadConfig — workspace alias resolution", () => {
+  function credsWithAliases() {
+    mockCredentialsExists();
+    readFileSyncMock.mockReturnValue(JSON.stringify({
+      token: "ftok", orgId: "forg", workspaceId: "default",
+      workspaceAliases: { forg: { "data platform dev": "data-platform-dev" }, other: { "x": "y" } },
+    }));
+  }
+
+  it("maps an env workspace NAME through the learned alias, case-insensitively", async () => {
+    credsWithAliases();
+    process.env.HIVEMIND_WORKSPACE_ID = "Data Platform Dev";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("data-platform-dev");
+  });
+
+  it("passes an unknown env value through unchanged (SessionStart warns instead)", async () => {
+    credsWithAliases();
+    process.env.HIVEMIND_WORKSPACE_ID = "nope";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("nope");
+  });
+
+  it("only consults aliases of the effective org", async () => {
+    credsWithAliases();
+    process.env.HIVEMIND_ORG_ID = "other";
+    process.env.HIVEMIND_WORKSPACE_ID = "Data Platform Dev";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("Data Platform Dev");
+  });
+
+  it("ignores inherited properties in the alias map", async () => {
+    mockCredentialsExists();
+    readFileSyncMock.mockReturnValue(JSON.stringify({ token: "ftok", orgId: "forg", workspaceAliases: { forg: { a: "b" } } }));
+    process.env.HIVEMIND_WORKSPACE_ID = "constructor";
+    const loadConfig = await importLoadConfig();
+    expect(loadConfig()?.workspaceId).toBe("constructor");
+  });
+
+  it("never rewrites the 'default' sentinel and exposes the alias map", async () => {
+    mockCredentialsExists();
+    readFileSyncMock.mockReturnValue(JSON.stringify({
+      token: "ftok", orgId: "forg", workspaceAliases: { forg: { default: "should-not-apply" } },
+    }));
+    const loadConfig = await importLoadConfig();
+    const cfg = loadConfig();
+    expect(cfg?.workspaceId).toBe("default");
+    expect(cfg?.workspaceAliases).toEqual({ forg: { default: "should-not-apply" } });
   });
 });

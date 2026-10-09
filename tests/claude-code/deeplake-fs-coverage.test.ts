@@ -24,32 +24,26 @@ afterEach(() => {
 // ── Mock clients ──────────────────────────────────────────────────────────────
 
 interface GoalRow { id?: string; goal_id: string; owner: string; status: string; content: string; created_at?: string }
-interface KpiRow { id?: string; goal_id: string; kpi_id: string; content: string; created_at?: string }
 
-/** Stateful client backing the goal/kpi structured tables plus a generic
+/** Stateful client backing the goals structured table plus a generic
  *  memory table. Maintains in-memory arrays so UPDATE-vs-INSERT, bootstrap,
  *  rm soft-close and mv status-transition all exercise real SQL shapes. */
-function makeGoalClient(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: string[] } = {}) {
+function makeGoalClient(init: { goals?: GoalRow[]; memory?: string[] } = {}) {
   const goals: GoalRow[] = (init.goals ?? []).map(g => ({ id: g.id ?? `seed-${g.goal_id}`, ...g }));
-  const kpis: KpiRow[] = (init.kpis ?? []).map(k => ({ id: k.id ?? `seed-${k.goal_id}-${k.kpi_id}`, ...k }));
   const memory = [...(init.memory ?? [])];
 
   const client = {
     applyStorageCreds: vi.fn().mockResolvedValue(undefined),
     ensureTable: vi.fn().mockResolvedValue(undefined),
     ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-    ensureKpisTable: vi.fn().mockResolvedValue(undefined),
-    listTables: vi.fn().mockResolvedValue(["memory", "goals", "kpis"]),
-    query: vi.fn(async (sql: string) => {
+    listTables: vi.fn().mockResolvedValue(["memory", "goals"]),
+    query: vi.fn(async (sql: string): Promise<Record<string, unknown>[]> => {
       // ── bootstrap ──
       if (sql.includes("SELECT path, size_bytes, mime_type")) {
         return memory.map(p => ({ path: p, size_bytes: 1, mime_type: "text/markdown" }));
       }
       if (sql.includes("SELECT goal_id, owner, status, content, created_at")) {
         return goals.map(g => ({ goal_id: g.goal_id, owner: g.owner, status: g.status, content: g.content, created_at: g.created_at ?? "2026-01-01" }));
-      }
-      if (sql.includes("SELECT goal_id, kpi_id, content, created_at")) {
-        return kpis.map(k => ({ goal_id: k.goal_id, kpi_id: k.kpi_id, content: k.content, created_at: k.created_at ?? "2026-01-01" }));
       }
       // ── goal upsert ──
       if (sql.startsWith("SELECT id") && sql.includes('"goals"')) {
@@ -71,37 +65,17 @@ function makeGoalClient(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: str
         if (m) goals.push({ id: m[1], goal_id: m[2], owner: m[3], status: m[4], content: m[5].replace(/''/g, "'") });
         return [];
       }
-      // ── kpi upsert ──
-      if (sql.startsWith("SELECT id") && sql.includes('"kpis"')) {
-        const gid = sql.match(/goal_id = '([^']+)'/)?.[1];
-        const kid = sql.match(/kpi_id = '([^']+)'/)?.[1];
-        return kpis.filter(k => k.goal_id === gid && k.kpi_id === kid).map(k => ({ id: k.id }));
-      }
-      if (sql.startsWith("UPDATE") && sql.includes('"kpis"')) {
-        const gid = sql.match(/WHERE goal_id = '([^']+)'/)?.[1];
-        const kid = sql.match(/kpi_id = '([^']+)'/)?.[1];
-        const row = kpis.find(k => k.goal_id === gid && k.kpi_id === kid);
-        if (row) row.content = (sql.match(/content = E'((?:[^']|'')*)'/)?.[1] ?? row.content).replace(/''/g, "'");
-        return [];
-      }
-      if (sql.startsWith("INSERT") && sql.includes('"kpis"')) {
-        const m = sql.match(/VALUES \(\s*'([^']*)',\s*'([^']*)',\s*'([^']*)',\s*E'((?:[^']|'')*)'/);
-        if (m) kpis.push({ id: m[1], goal_id: m[2], kpi_id: m[3], content: m[4].replace(/''/g, "'") });
-        return [];
-      }
       return [];
     }),
     _goals: goals,
-    _kpis: kpis,
   };
   return client;
 }
 
-async function makeGoalFs(init: { goals?: GoalRow[]; kpis?: KpiRow[]; memory?: string[] } = {}) {
+async function makeGoalFs(init: { goals?: GoalRow[]; memory?: string[] } = {}) {
   const client = makeGoalClient(init);
   const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
     goalsTable: "goals",
-    kpisTable: "kpis",
   });
   return { fs, client };
 }
@@ -245,54 +219,29 @@ describe("goals bootstrap", () => {
 });
 
 // ── Bootstrap null-coalescing (defensive ?? "" paths) ────────────────────────
-describe("goals/kpis bootstrap with null columns", () => {
-  function rawClient(goalRows: Record<string, unknown>[], kpiRows: Record<string, unknown>[]) {
+describe("goals bootstrap with null columns", () => {
+  function rawClient(goalRows: Record<string, unknown>[]) {
     return {
       applyStorageCreds: vi.fn().mockResolvedValue(undefined),
       ensureTable: vi.fn().mockResolvedValue(undefined),
       ensureGoalsTable: vi.fn().mockResolvedValue(undefined),
-      ensureKpisTable: vi.fn().mockResolvedValue(undefined),
       query: vi.fn(async (sql: string) => {
         if (sql.includes("SELECT goal_id, owner, status, content, created_at")) return goalRows;
-        if (sql.includes("SELECT goal_id, kpi_id, content, created_at")) return kpiRows;
         return [];
       }),
     };
   }
 
-  it("coalesces null goal/kpi columns and keeps only well-formed rows", async () => {
-    const client = rawClient(
-      [
-        { goal_id: null, owner: null, status: null, content: null },             // every field null → skipped
-        { goal_id: "g1", owner: "alice", status: "opened", content: null },      // valid path, null content → ""
-      ],
-      [
-        { goal_id: null, kpi_id: null, content: null },                          // skipped
-        { goal_id: "g1", kpi_id: "k1", content: null },                          // valid, null content → ""
-      ],
-    );
+  it("coalesces null goal columns and keeps only well-formed rows", async () => {
+    const client = rawClient([
+      { goal_id: null, owner: null, status: null, content: null },             // every field null → skipped
+      { goal_id: "g1", owner: "alice", status: "opened", content: null },      // valid path, null content → ""
+    ]);
     const fs = await DeeplakeFs.create(client as never, "memory", "/", "sessions", {
       goalsTable: "goals",
-      kpisTable: "kpis",
     });
     expect(await fs.readdir("/goal/alice/opened")).toEqual(["g1.md"]);
     expect(await fs.readFile("/goal/alice/opened/g1.md")).toBe("");
-    expect(await fs.readdir("/kpi/g1")).toEqual(["k1.md"]);
-    expect(await fs.readFile("/kpi/g1/k1.md")).toBe("");
-  });
-});
-
-// ── KPIs bootstrap ──────────────────────────────────────────────────────────
-describe("kpis bootstrap", () => {
-  it("synthesizes kpi paths and skips rows missing ids", async () => {
-    const { fs } = await makeGoalFs({
-      kpis: [
-        { goal_id: "g1", kpi_id: "k1", content: "kpi-body" },
-        { goal_id: "", kpi_id: "k2", content: "skip" }, // skip (327)
-      ],
-    });
-    expect(await fs.readdir("/kpi/g1")).toEqual(["k1.md"]);
-    expect(await fs.readFile("/kpi/g1/k1.md")).toBe("kpi-body");
   });
 });
 
@@ -317,27 +266,6 @@ describe("goal write routing", () => {
     await fs.flush();
     expect(client._goals.find(g => g.goal_id === "g1")!.content).toBe("v1");
     const updates = (client.query.mock.calls as [string][]).filter(c => c[0].startsWith("UPDATE") && c[0].includes('"goals"'));
-    expect(updates.length).toBe(1);
-  });
-});
-
-// ── KPI write routing (upsertRow → upsertKpiRow) ─────────────────────────────
-describe("kpi write routing", () => {
-  it("INSERTs a new kpi into the kpis table on flush", async () => {
-    const { fs, client } = await makeGoalFs({});
-    await fs.writeFile("/kpi/g1/k1.md", "metric");
-    await fs.flush();
-    expect(client._kpis).toContainEqual(expect.objectContaining({ goal_id: "g1", kpi_id: "k1", content: "metric" }));
-  });
-
-  it("UPDATEs an existing kpi row in place", async () => {
-    const { fs, client } = await makeGoalFs({
-      kpis: [{ goal_id: "g1", kpi_id: "k1", content: "0" }],
-    });
-    await fs.writeFile("/kpi/g1/k1.md", "42");
-    await fs.flush();
-    expect(client._kpis.find(k => k.kpi_id === "k1")!.content).toBe("42");
-    const updates = (client.query.mock.calls as [string][]).filter(c => c[0].startsWith("UPDATE") && c[0].includes('"kpis"'));
     expect(updates.length).toBe(1);
   });
 });
@@ -405,6 +333,30 @@ describe("flush re-queue on failure", () => {
     // The rejected row is re-queued for a later flush; the flush itself reports
     // the failure so the caller knows the write did not land.
     await expect(fs.flush()).rejects.toThrow(/writes failed and were re-queued/);
+  });
+
+  it("keeps a newer write over the re-queued stale row when the write lands mid-flush", async () => {
+    const { fs, client } = await makeGoalFs({});
+    let rejectInsert!: (e: Error) => void;
+    const insertStarted = new Promise<void>((started) => {
+      client.query.mockImplementationOnce(() => new Promise<never>((_, reject) => { rejectInsert = reject; started(); }));
+    });
+    await fs.writeFile("/notes/x.md", "v1");
+    const flushing = fs.flush();
+    await insertStarted;
+    // The v1 INSERT is in flight; the caller overwrites the same path.
+    await fs.writeFile("/notes/x.md", "v2");
+    rejectInsert(new Error("backend down"));
+    await expect(flushing).rejects.toThrow(/1\/1 writes failed/);
+    // v2 must survive the re-queue — the stale v1 row must not clobber it.
+    expect(await fs.readFile("/notes/x.md")).toBe("v2");
+  });
+
+  it("flush with nothing pending issues no query", async () => {
+    const { fs, client } = await makeGoalFs({});
+    client.query.mockClear();
+    await fs.flush();
+    expect(client.query).not.toHaveBeenCalled();
   });
 });
 
@@ -507,6 +459,28 @@ describe("read branches", () => {
     await fs.writeFile("/notes/c.md", "cached");
     const buf = await fs.readFileBuffer("/notes/c.md");
     expect(Buffer.from(buf).toString("utf-8")).toBe("cached");
+  });
+
+  it("readFile (text) mirrors readFileBuffer: ENOENT on a missing row, '' on a NULL summary", async () => {
+    const { fs, client } = await makeGoalFs({ memory: ["/notes/gone.md", "/notes/null.md"] });
+    client.query.mockImplementation(async (sql: string) => sql.includes("/notes/null.md") ? [{ summary: null }] : []);
+    await expect(fs.readFile("/notes/gone.md")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile("/notes/null.md")).toBe("");
+  });
+
+  it("readFile (text) serves a pending unflushed write without a query", async () => {
+    const { fs, client } = await makeGoalFs({});
+    await fs.writeFile("/notes/pending.md", "not flushed yet");
+    client.query.mockClear();
+    expect(await fs.readFile("/notes/pending.md")).toBe("not flushed yet");
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it("prefetch skips unknown paths and issues no query for them", async () => {
+    const { fs, client } = await makeGoalFs({});
+    client.query.mockClear();
+    await fs.prefetch(["/notes/never-registered.md"]);
+    expect(client.query).not.toHaveBeenCalled();
   });
 
   it("readFileBuffer throws ENOENT when the SQL row is absent", async () => {

@@ -38,6 +38,16 @@ describe("LocalBackend", () => {
     backend.close();
   });
 
+  it.each(["E'foo", "ILIKE ::text JSONB", "literal USING deeplake", "ARRAY[1,2]::float4[]"])("preserves SQL-looking text: %s", async (message) => {
+    const root = mkdtempSync(join(tmpdir(), "hivemind-local-")); roots.push(root);
+    const backend = new LocalBackend(root);
+    try {
+      await backend.query("CREATE TABLE literal_test (message TEXT)");
+      await backend.query(`INSERT INTO literal_test VALUES ('${message.replace(/'/g, "''")}')`);
+      expect(await backend.query("SELECT message FROM literal_test")).toEqual([{ message }]);
+    } finally { backend.close(); }
+  });
+
   it("provides Deeplake-style information_schema columns locally", async () => {
     const root = mkdtempSync(join(tmpdir(), "hivemind-local-")); roots.push(root);
     const backend = new LocalBackend(root);
