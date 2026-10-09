@@ -7,9 +7,10 @@
  * Invoked by stop.ts as: node wiki-worker.js <config.json>
  */
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, rmSync, openSync, closeSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { buildTrailingPromptInvocation } from "../wiki-worker-spawn.js";
+import { buildCodexWikiInvocation } from "../wiki-worker-spawn.js";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { finalizeSummary, releaseLock, readState } from "../summary-state.js";
@@ -242,14 +243,19 @@ async function main(): Promise<void> {
     wlog("running codex exec");
     let execSucceeded = false;
     const summaryBeforeExec = existsSync(tmpSummary) ? readFileSync(tmpSummary, "utf-8") : null;
+    const execStarted = Date.now();
+    const startupPath = join(tmpDir, "codex-stderr.log");
+    const stderrFd = openSync(startupPath, "w", 0o600);
     try {
-      const inv = buildTrailingPromptInvocation(cfg.codexBin, [
-        "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
-      ], prompt);
+      const configPath = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "config.toml");
+      const configText = existsSync(configPath) ? readFileSync(configPath, "utf-8") : "";
+      const inv = buildCodexWikiInvocation(cfg.codexBin, prompt, configText);
+      wlog(`codex config mode: ${inv.args.includes("--ignore-user-config") ? "minimal (same auth home)" : "configured (model identity not safely isolatable)"}`);
       execFileSync(inv.file, inv.args, {
         ...inv.options,
-        timeout: 120_000,
+        ...(inv.args.includes("--ignore-user-config") ? { cwd: tmpDir } : {}),
+        stdio: [inv.options.input ? "pipe" : "ignore", "pipe", stderrFd],
+        timeout: 600_000,
         // codex exec streams its reasoning to stdout, which execFileSync
         // buffers. The Node default (1 MB) overflows to ENOBUFS on a verbose
         // run, killing the summary. The summary is written to a file, not read
@@ -260,8 +266,15 @@ async function main(): Promise<void> {
       execSucceeded = true;
       wlog("codex exec exited (code 0)");
     } catch (e: any) {
+      if (e && typeof e === "object") e.stderr = e.stderr || readFileSync(startupPath, "utf-8");
       const detail = formatExecFailure(e);
       wlog(`codex exec failed: ${detail}`);
+    } finally {
+      closeSync(stderrFd);
+      const startup = readFileSync(startupPath, "utf-8").split("\n")
+        .filter(line => /^(?:OpenAI Codex v|model:|provider:|reasoning effort:|mcp: [\w-]+ (?:starting|ready|failed)|mcp startup:)/.test(line));
+      wlog(`codex startup: ${redactSecrets(startup.join(" | "))}`);
+      wlog(`codex subprocess runtime_ms=${Date.now() - execStarted}`);
     }
 
     // 4. Upload summary to memory table

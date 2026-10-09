@@ -504,3 +504,19 @@ describe("uninstallCodex", () => {
     expect(existsSync(hooksPath)).toBe(false);
   });
 });
+
+ describe("Codex converted marketplace hooks", () => {
+  it("backs up and removes duplicate Hivemind hooks only after local registration", async () => {
+    const cache = join(tmpHome, ".codex", "plugins", "cache", "hivemind", "hivemind", "0.7.160", "hooks");
+    mkdirSync(cache, { recursive: true });
+    const path = join(cache, "hooks.json");
+    const prior = JSON.stringify({ description: "keep", hooks: { SessionEnd: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/bundle/session-end.js"', timeout: 60, async: true }, { type: "command", command: "echo unrelated", timeout: 1 }] }] } });
+    writeFileSync(path, prior);
+    const { installCodex } = await importInstaller();
+    installCodex();
+    expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({ description: "keep", hooks: { SessionEnd: [{ hooks: [{ type: "command", command: "echo unrelated", timeout: 1 }] }] } });
+    expect(readFileSync(path + ".pre-codex-local-hooks.bak", "utf-8")).toBe(prior);
+    installCodex();
+    expect(readFileSync(path + ".pre-codex-local-hooks.bak", "utf-8")).toBe(prior);
+  });
+});

@@ -176,8 +176,9 @@ describe("codex wiki-worker — happy path", () => {
     execFileSyncMock.mockImplementation((bin: string, args: string[]) => {
       expect(bin).toBe("/fake/codex");
       expect(args[0]).toBe("exec");
-      expect(args[1]).toBe("--dangerously-bypass-approvals-and-sandbox");
-      const prompt = args[2];
+      expect(args).toContain("--ephemeral");
+      expect(args).toContain("--disable");
+      const prompt = args.at(-1)!;
       const jsonlPath = prompt.match(/JSONL=(\S+)/)![1];
       capturedJsonl = readFileSync(jsonlPath, "utf-8");
       const summaryPath = prompt.match(/SUMMARY=(\S+)/)![1];
@@ -213,14 +214,14 @@ describe("codex wiki-worker — happy path", () => {
     mkFetch(1, true, 9);
     let capturedJsonl: string | null = null;
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const prompt = args[2];
+      const prompt = args.at(-1)!;
       capturedJsonl = readFileSync(prompt.match(/JSONL=(\S+)/)![1], "utf-8");
       const summaryPath = prompt.match(/SUMMARY=(\S+)/)![1];
       writeFileSync(summaryPath, "# updated\n\n## What Happened\n...\n");
       return Buffer.from("");
     });
     await runWorker();
-    const prompt = execFileSyncMock.mock.calls[0][1][2] as string;
+    const prompt = execFileSyncMock.mock.calls[0][1].at(-1)! as string;
     expect(prompt).toContain("OFFSET=7");
     // Only the rows after the offset reach the JSONL — not the full session.
     expect(capturedJsonl!.trim().split("\n")).toHaveLength(2);
@@ -234,12 +235,13 @@ describe("codex wiki-worker — happy path", () => {
   it("caps the codex exec output buffer so a verbose run can't ENOBUFS", async () => {
     mkFetch();
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      writeFileSync(args[2].match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nx\n");
+      writeFileSync(args.at(-1)!.match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nx\n");
       return Buffer.from("");
     });
     await runWorker();
     const execOpts = execFileSyncMock.mock.calls[0][2];
     expect(execOpts.maxBuffer).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+    expect(execOpts.timeout).toBe(600_000);
   });
 
   it("skips codex exec when the resumed offset already covers every row", async () => {
@@ -259,7 +261,7 @@ describe("codex wiki-worker — happy path", () => {
     // or the offset would jump past rows that were never fully summarized.
     mkFetch(1, true, 9);
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      writeFileSync(args[2].match(/SUMMARY=(\S+)/)![1], "# partial\n\n## What Happened\nhalf...\n");
+      writeFileSync(args.at(-1)!.match(/SUMMARY=(\S+)/)![1], "# partial\n\n## What Happened\nhalf...\n");
       throw new Error("timeout");
     });
     await runWorker();
@@ -278,15 +280,15 @@ describe("codex wiki-worker — happy path", () => {
     readStateMock.mockReturnValue({ lastSummaryAt: 0, lastSummaryCount: 3, totalCount: 3 });
     let capturedJsonl: string | null = null;
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      capturedJsonl = readFileSync(args[2].match(/JSONL=(\S+)/)![1], "utf-8");
-      writeFileSync(args[2].match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nx\n");
+      capturedJsonl = readFileSync(args.at(-1)!.match(/JSONL=(\S+)/)![1], "utf-8");
+      writeFileSync(args.at(-1)!.match(/SUMMARY=(\S+)/)![1], "# s\n\n## What Happened\nx\n");
       return Buffer.from("");
     });
     await runWorker();
     expect(execFileSyncMock).toHaveBeenCalledOnce();
     // All 3 rows fed (offset treated as 0), not sliced down to zero-new → skip.
     expect(capturedJsonl!.trim().split("\n")).toHaveLength(3);
-    const prompt = execFileSyncMock.mock.calls[0][1][2] as string;
+    const prompt = execFileSyncMock.mock.calls[0][1].at(-1)! as string;
     expect(prompt).toContain("OFFSET=0");
   });
 
@@ -315,12 +317,12 @@ describe("codex wiki-worker — happy path", () => {
   it("falls back to /sessions/unknown/ when path SELECT empty", async () => {
     mkFetch(0);
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[2].match(/SUMMARY=(\S+)/)![1];
+      const summaryPath = args.at(-1)!.match(/SUMMARY=(\S+)/)![1];
       writeFileSync(summaryPath, "x\n");
       return Buffer.from("");
     });
     await runWorker();
-    const prompt = execFileSyncMock.mock.calls[0][1][2] as string;
+    const prompt = execFileSyncMock.mock.calls[0][1].at(-1)! as string;
     expect(prompt).toContain("SRC=/sessions/unknown/sid-codex.jsonl");
   });
 
@@ -339,9 +341,9 @@ describe("codex wiki-worker — happy path", () => {
     });
     let capturedJsonl: string | null = null;
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const jsonlPath = args[2].match(/JSONL=(\S+)/)![1];
+      const jsonlPath = args.at(-1)!.match(/JSONL=(\S+)/)![1];
       capturedJsonl = readFileSync(jsonlPath, "utf-8");
-      const summaryPath = args[2].match(/SUMMARY=(\S+)/)![1];
+      const summaryPath = args.at(-1)!.match(/SUMMARY=(\S+)/)![1];
       writeFileSync(summaryPath, "x");
       return Buffer.from("");
     });
@@ -452,7 +454,7 @@ describe("codex wiki-worker — finalize + release edges", () => {
       return jsonResp({ columns: ["summary"], rows: [] });
     });
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[2].match(/SUMMARY=(\S+)/)![1];
+      const summaryPath = args.at(-1)!.match(/SUMMARY=(\S+)/)![1];
       writeFileSync(summaryPath, "# s\n\n## What Happened\nX\n");
       return Buffer.from("");
     });
@@ -475,7 +477,7 @@ describe("codex wiki-worker — finalize + release edges", () => {
 
   it("skips upload when summary file is whitespace-only", async () => {
     execFileSyncMock.mockImplementation((_bin: string, args: string[]) => {
-      const summaryPath = args[2].match(/SUMMARY=(\S+)/)![1];
+      const summaryPath = args.at(-1)!.match(/SUMMARY=(\S+)/)![1];
       writeFileSync(summaryPath, "   \n\n");
       return Buffer.from("");
     });

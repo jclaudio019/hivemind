@@ -127,3 +127,23 @@ describe("codex bundle output", () => {
     });
   }
 });
+
+ describe("minimal Codex summary invocation", () => {
+  it("retains model and effort while using the same auth home", async () => {
+    const { buildCodexWikiInvocation } = await import("../../src/hooks/wiki-worker-spawn.js");
+    const inv = buildCodexWikiInvocation("codex", "prompt", 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "low"\n[features]\nhooks = true');
+    expect(inv.args).toContain("--ignore-user-config");
+    expect(inv.args).toContain("--ephemeral");
+    expect(inv.args).toContain("--skip-git-repo-check");
+    expect(inv.args).toContain('model="gpt-6.1-sol"');
+    expect(inv.args).toContain('model_reasoning_effort="low"');
+    expect(inv.options).not.toHaveProperty("env");
+    expect(inv.args.at(-1)).toBe("prompt");
+  });
+  it("retains configured invocation for custom provider or ambiguous model configuration", async () => {
+    const { buildCodexWikiInvocation } = await import("../../src/hooks/wiki-worker-spawn.js");
+    for (const config of ['model_provider = "custom"\nmodel = "m"', 'model = "m"\n[profiles.x]\nmodel = "other"', "model = \"m\"\nmodel_provider = 'custom'", 'model = "m"\n[model_providers.openai]\nbase_url = "custom"', '']) {
+      expect(buildCodexWikiInvocation("codex", "p", config).args).not.toContain("--ignore-user-config");
+    }
+  });
+});

@@ -105,3 +105,29 @@ export function buildStdinPromptInvocation(bin: string, flags: string[], prompt:
 export function buildClaudeStdinInvocation(claudeBin: string, prompt: string): ClaudeInvocation {
   return buildStdinPromptInvocation(claudeBin, ["-p", ...CLAUDE_FLAGS], prompt);
 }
+
+/** Codex supports ignoring config without changing CODEX_HOME/auth. Only use
+ * that path when the root model identity is explicit and unambiguous; otherwise
+ * keep the configured provider/model rather than silently switching billing. */
+export function buildCodexWikiInvocation(bin: string, prompt: string, configText: string): ClaudeInvocation {
+  const root = configText.split(/^\s*\[/m)[0];
+  const model = root.match(/^\s*model\s*=\s*("[^"\n]+")\s*(?:#.*)?$/m);
+  const provider = root.match(/^\s*model_provider\s*=\s*("[^"\n]+")\s*(?:#.*)?$/m);
+  const effort = root.match(/^\s*model_reasoning_effort\s*=\s*("[^"\n]+")\s*(?:#.*)?$/m);
+  const ambiguous = /^\s*(?:model|model_provider|model_reasoning_effort|profile|config_profile|include)\s*=/m.test(configText.slice(root.length));
+  const serviceTier = root.match(/^\s*service_tier\s*=\s*("[^"\n]+")\s*(?:#.*)?$/m);
+  const unsupportedIdentity = /(?:^\s*\[\s*model_providers[.\]]|^\s*(?:chatgpt_base_url|openai_base_url)\s*=)/m.test(configText)
+    || (root.match(/^\s*model\s*=/gm)?.length ?? 0) !== 1
+    || (/^\s*model_provider\s*=/m.test(root) && !provider)
+    || (/^\s*service_tier\s*=/m.test(root) && !serviceTier);
+  const minimal = !unsupportedIdentity && model && (!provider || provider[1] === '"openai"') && !ambiguous && !/^\s*(?:profile|config_profile|include)\s*=/m.test(root);
+  return buildTrailingPromptInvocation(bin, [
+    "exec", "--dangerously-bypass-approvals-and-sandbox",
+    "--ephemeral", "--skip-git-repo-check",
+    "--disable", "hooks", "--disable", "plugins",
+    ...(minimal ? ["--ignore-user-config", "-c", `model=${model[1]}`,
+      ...(effort ? ["-c", `model_reasoning_effort=${effort[1]}`] : []),
+      ...(serviceTier ? ["-c", `service_tier=${serviceTier[1]}`] : []),
+      "-c", "project_doc_max_bytes=0", "--enable", "skip_host_skill_discovery"] : []),
+  ], prompt);
+}

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, copyFileSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { HOME, pkgRoot, ensureDir, copyDir, writeJson, writeJsonIfChanged, symlinkForce, writeVersionStamp, log, warn } from "./util.js";
@@ -291,6 +291,54 @@ function removeCodexAgentsBlock(): void {
   }
 }
 
+/** The converted Claude marketplace cache is also discovered by Codex. Once
+ * the native local hooks are registered, they are the sole Hivemind owner.
+ * Touch only Codex's Hivemind cache; retain foreign commands and original bytes.
+ * Never write trust hashes: unchanged local hook definitions retain their trust.
+ */
+export function reconcileCodexMarketplaceHooks(codexHome: string = CODEX_HOME): string[] {
+  const localPath = join(codexHome, "hooks.json");
+  if (!existsSync(localPath)) return [];
+  const local = JSON.parse(readFileSync(localPath, "utf-8"));
+  const hasLocalCommand = (event: string, file: string) => (local.hooks?.[event] ?? []).some(
+    (entry: { hooks?: { command?: string }[] }) => entry.hooks?.some(
+      hook => hook.command?.includes(join(codexHome, "hivemind", "bundle", file))));
+  if (!hasLocalCommand("UserPromptSubmit", "capture.js") || !hasLocalCommand("Stop", "stop.js")) return [];
+  const root = join(codexHome, "plugins", "cache", "hivemind", "hivemind");
+  if (!existsSync(root)) return [];
+  const changed: string[] = [];
+  for (const version of readdirSync(root, { withFileTypes: true })) {
+    if (!version.isDirectory()) continue;
+    const path = join(root, version.name, "hooks", "hooks.json");
+    if (!existsSync(path) || lstatSync(path).isSymbolicLink()) continue;
+    const original = readFileSync(path, "utf-8");
+    const manifest = JSON.parse(original);
+    if (!manifest.hooks || typeof manifest.hooks !== "object") continue;
+    const hooks: Record<string, unknown[]> = {};
+    for (const [event, entries] of Object.entries(manifest.hooks)) {
+      if (!Array.isArray(entries)) throw new Error(`Invalid hook entries at ${path}`);
+      const kept = entries.flatMap(entry => {
+        if (!Array.isArray(entry.hooks)) throw new Error(`Invalid hook block at ${path}`);
+        const commands = entry.hooks.filter((hook: { command?: unknown }) => {
+          if (typeof hook.command !== "string") return true;
+          const match = hook.command.match(/\$\{?(?:CLAUDE_)?PLUGIN_ROOT\}?\/bundle\/([\w-]+\.js)/);
+          const owned = [...HIVEMIND_BUNDLE_FILES, "session-notifications.js", "session-end.js", "plugin-cache-gc.js"];
+          return !match || !owned.includes(match[1]);
+        });
+        return commands.length ? [{ ...entry, hooks: commands }] : [];
+      });
+      if (kept.length) hooks[event] = kept;
+    }
+    const next = { ...manifest, hooks };
+    if (JSON.stringify(next) === JSON.stringify(manifest)) continue;
+    const backup = path + ".pre-codex-local-hooks.bak";
+    if (!existsSync(backup)) copyFileSync(path, backup);
+    writeJsonIfChanged(path, next);
+    changed.push(path);
+  }
+  return changed;
+}
+
 export function installCodex(): void {
   const srcBundle = join(pkgRoot(), "harnesses", "codex", "bundle");
   const srcSkills = join(pkgRoot(), "harnesses", "codex", "skills");
@@ -311,6 +359,10 @@ export function installCodex(): void {
   // re-prompted each time.
   if (!writeJsonIfChanged(HOOKS_PATH, mergeHooksJson(buildHooksJson()))) {
     log(`  Codex          hooks.json unchanged — skipped rewrite (no re-trust prompt)`);
+  }
+
+  for (const path of reconcileCodexMarketplaceHooks()) {
+    log(`  Codex          marketplace hooks delegated to local registration -> ${path}`);
   }
 
   ensureDir(AGENTS_SKILLS_DIR);
