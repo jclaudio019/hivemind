@@ -82,10 +82,28 @@ function informationSchemaQuery(sql: string): { table: string } | null {
 }
 
 function normalizeSql(sql: string): string {
-  return sql
+  let normalized = "";
+  let inString = false;
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    if (char === "'") {
+      if (inString && sql[i + 1] === "'") {
+        normalized += "''";
+        i++;
+        continue;
+      }
+      inString = !inString;
+    }
+    if (!inString && (char === "E" || char === "e") && sql[i + 1] === "'") {
+      normalized += "'";
+      i++;
+    } else {
+      normalized += char;
+    }
+  }
+  return normalized
     // PostgreSQL escape-string literals are ordinary SQLite string literals for
     // our already-escaped payloads. Backslash decoding is deliberately omitted.
-    .replace(/\bE'/g, "'")
     .replace(/\s+USING\s+deeplake_index\s*(?=\()/gi, "")
     .replace(/\s+USING\s+deeplake\s*;?\s*$/i, "")
     .replace(/::text\b/gi, "")
